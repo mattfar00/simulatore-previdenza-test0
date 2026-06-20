@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Simulatore R.I.T.A. Pro", layout="wide")
-st.title(" Simulatore: Fondo Pensione vs PAC)
+st.title(" Simulatore: Fondo Pensione vs PAC")
 
 # --- SIDEBAR: INPUT DATI ---
 st.sidebar.header("1. Parametri Fiscali")
