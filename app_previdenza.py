@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Simulatore R.I.T.A. Pro", layout="wide")
-st.title(" Simulatore: Fondo Pensione vs PAC")
+st.title("🚀 Simulatore: Fondo Pensione vs PAC")
 
 # --- SIDEBAR ---
 st.sidebar.header("1. Parametri Fiscali")
@@ -110,8 +110,8 @@ for anno in range(1, durata + 1):
         "Capitale PAC Volontario": capitale_pac_volontario,
         "Capitale TFR Investito": capitale_tfr_investito,
         "Beneficio Totale (Fondo + IRPEF)": capitale_fondo + risparmio_irpef_accumulato,
-        "Netto Mensile Fondo": disponibile_mensile_fondo,
-        "Netto Mensile PAC": disponibile_mensile_pac
+        "Cumulato Netto Mensile Fondo": disponibile_mensile_fondo * 12 * anno,
+        "Cumulato Netto Mensile PAC": disponibile_mensile_pac * 12 * anno
     })
 
 df = pd.DataFrame(dati_grafico)
@@ -122,13 +122,13 @@ final_fondo_totale = netto_fondo_dopo_tasse + risparmio_irpef_accumulato
 plusvalenza_pac = max(0, capitale_pac_volontario - totale_investito_pac)
 final_pac_netto = capitale_pac_volontario - (plusvalenza_pac * (tassa_uscita_pac / 100))
 
-# --- ANALISI DISPONIBILITÀ MENSILE NEL TEMPO ---
-st.subheader("💰 Analisi Disponibilità Mensile nel Tempo")
-fig_mensile = go.Figure()
-fig_mensile.add_trace(go.Scatter(x=df["Anno"], y=df["Netto Mensile Fondo"], name='Netto Mensile Fondo', line=dict(color='#2ca02c', width=3)))
-fig_mensile.add_trace(go.Scatter(x=df["Anno"], y=df["Netto Mensile PAC"], name='Netto Mensile PAC', line=dict(color='#1f77b4', width=3)))
-fig_mensile.update_layout(title="Disponibilità mensile residua (costante nel tempo)", xaxis_title="Anni", yaxis_title="Euro (€)")
-st.plotly_chart(fig_mensile, use_container_width=True, key="grafico_mensile_tempo")
+# --- ANALISI CUMULATA ---
+st.subheader("💰 Analisi Liquidità Cumulata (Netto residuo nel tempo)")
+fig_cumulata = go.Figure()
+fig_cumulata.add_trace(go.Scatter(x=df["Anno"], y=df["Cumulato Netto Mensile Fondo"], name='Cumulato Fondo', line=dict(color='#2ca02c', width=3)))
+fig_cumulata.add_trace(go.Scatter(x=df["Anno"], y=df["Cumulato Netto Mensile PAC"], name='Cumulato PAC', line=dict(color='#1f77b4', width=3)))
+fig_cumulata.update_layout(title="Totale netto residuo accumulato negli anni", xaxis_title="Anni", yaxis_title="Euro (€)")
+st.plotly_chart(fig_cumulata, use_container_width=True, key="grafico_cumulata")
 
 st.subheader("🏁 Risultato Finale (Netto Tasse + Beneficio Fiscale)")
 col_a, col_b = st.columns(2)
