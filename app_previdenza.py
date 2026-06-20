@@ -90,7 +90,9 @@ for anno in range(1, durata + 1):
     liquidita_cumulata_fondo += (disponibile_mensile_fondo * 12)
     liquidita_cumulata_pac += (disponibile_mensile_pac * 12)
     
-    inv_fondo_netto = (capitale_fondo * (1 - (tassa_uscita_fondo / 100))) + (risparmio_fiscale_annuo * anno)
+    # --- MODIFICA APPLICATA QUI (Rimossa l'aggiunta dell'IRPEF per evitare il doppio conteggio) ---
+    inv_fondo_netto = capitale_fondo * (1 - (tassa_uscita_fondo / 100))
+    
     plus_pac = max(0, capitale_pac - (versamento_pac * anno))
     inv_pac_tfr_netto = (capitale_pac - (plus_pac * (tassa_uscita_pac / 100))) + (capitale_tfr * (1 - (tassa_tfr / 100)))
     
