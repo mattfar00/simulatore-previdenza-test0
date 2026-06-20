@@ -4,14 +4,14 @@ import plotly.graph_objects as go
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Simulatore R.I.T.A. Pro", layout="wide")
-st.title(" Simulatore: Fondo Pensione vs PAC ")
+st.title(" Simulatore: Fondo Pensione vs PAC (Analisi Costi)")
 
 # --- SIDEBAR ---
 st.sidebar.header("1. Parametri Fiscali")
 aliquota_irpef = st.sidebar.selectbox("Aliquota IRPEF (%)", [23, 33, 43], index=1)
 limite_deducibilita = 5300
 
-st.sidebar.header("2. Fondo Pensione ")
+st.sidebar.header("2. Fondo Pensione")
 versamento_fondo = st.sidebar.number_input("Versamento Volontario Annuo (€)", min_value=0, value=5300, step=100)
 tfr_annuo = st.sidebar.number_input("Quota TFR Annua (€)", min_value=0, value=2200, step=100)
 contributo_azienda = st.sidebar.number_input("Contributo Aziendale Annuo (€)", min_value=0, value=700, step=50)
@@ -37,6 +37,22 @@ quota_dedotta = min(versamento_fondo + contributo_azienda, limite_deducibilita)
 risparmio_irpef_annuo = quota_dedotta * (aliquota_irpef / 100)
 costo_netto_fondo = max(0, versamento_fondo - risparmio_irpef_annuo)
 
+# --- ANALISI COSTI ATTIVI ---
+st.subheader("💡 Analisi Efficienza (Quanto investi per ogni € speso?)")
+investito_lordo_fondo = versamento_fondo + tfr_annuo + contributo_azienda
+investito_lordo_pac = versamento_pac + tfr_annuo
+
+# Calcolo efficienza: quanto capitale lavora per me per ogni euro che "sento" uscire?
+leva_fondo = investito_lordo_fondo / costo_netto_fondo if costo_netto_fondo > 0 else 0
+leva_pac = 1.0 # Nel pac investo esattamente ciò che spendo (1:1)
+
+df_costi = pd.DataFrame({
+    "Metrica": ["Investimento Lordo Annuo", "Costo Netto (Sacrificio)", "Vantaggio Fiscale", "Coefficiente Efficienza (Leva)"],
+    "Fondo Pensione": [investito_lordo_fondo, costo_netto_fondo, risparmio_irpef_annuo, leva_fondo],
+    "PAC + TFR Investito": [investito_lordo_pac, investito_lordo_pac, 0, leva_pac]
+})
+st.table(df_costi.style.format({"Fondo Pensione": "{:,.2f}", "PAC + TFR Investito": "{:,.2f}"}))
+
 # --- MOTORE DI CALCOLO ---
 capitale_fondo = 0.0
 capitale_pac_volontario = 0.0
@@ -46,23 +62,19 @@ risparmio_irpef_accumulato = 0.0
 dati_grafico = []
 
 for anno in range(1, durata + 1):
-    # 1. FONDO (Tutto incluso)
     capitale_fondo += (versamento_fondo + tfr_annuo + contributo_azienda)
     capitale_fondo += (capitale_fondo * rend_fondo) 
     capitale_fondo -= (capitale_fondo * costo_perc_fondo + costo_fisso_fondo)
     
-    # 2. PAC VOLONTARIO (Solo tuoi risparmi)
     totale_investito_pac += versamento_pac
     capitale_pac_volontario += versamento_pac
     capitale_pac_volontario += (capitale_pac_volontario * rend_pac)
     capitale_pac_volontario -= (capitale_pac_volontario * costo_perc_pac)
     
-    # 3. TFR INVESTITO (Con rendimento dedicato)
     capitale_tfr_investito += tfr_annuo
     capitale_tfr_investito += (capitale_tfr_investito * rend_tfr)
     capitale_tfr_investito -= (capitale_tfr_investito * costo_perc_pac)
     
-    # Accumulo risparmio IRPEF
     risparmio_irpef_accumulato += risparmio_irpef_annuo
     
     dati_grafico.append({
@@ -75,12 +87,11 @@ for anno in range(1, durata + 1):
 
 df = pd.DataFrame(dati_grafico)
 
-# --- RISULTATI FINALI CON TASSE ---
+# --- RISULTATI FINALI E GRAFICI ---
 final_fondo_netto = capitale_fondo * (1 - (tassa_uscita_fondo / 100))
 plusvalenza_pac = max(0, capitale_pac_volontario - totale_investito_pac)
 final_pac_netto = capitale_pac_volontario - (plusvalenza_pac * (tassa_uscita_pac / 100))
 
-# --- VISUALIZZAZIONE ---
 st.subheader("🏁 Risultato Finale (Netto Tasse)")
 col_a, col_b = st.columns(2)
 with col_a:
