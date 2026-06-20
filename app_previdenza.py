@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Simulatore R.I.T.A. Pro", layout="wide")
-st.title(" Simulatore: Fondo Pensione vs PAC (Analisi Costi)")
+st.title(" Simulatore: Fondo Pensione vs PAC")
 
 # --- SIDEBAR ---
 st.sidebar.header("1. Parametri Fiscali")
@@ -38,20 +38,21 @@ risparmio_irpef_annuo = quota_dedotta * (aliquota_irpef / 100)
 costo_netto_fondo = max(0, versamento_fondo - risparmio_irpef_annuo)
 
 # --- ANALISI COSTI ATTIVI ---
-st.subheader("💡 Analisi Efficienza (Quanto investi per ogni € speso?)")
-investito_lordo_fondo = versamento_fondo + tfr_annuo + contributo_azienda
-investito_lordo_pac = versamento_pac + tfr_annuo
+st.subheader("💡 Analisi Efficienza (Sacrificio vs Capitale Investito)")
+# Costo = Sacrificio reale dal netto mensile
+costo_sacrificio_fondo = costo_netto_fondo
+costo_sacrificio_pac = versamento_pac
 
-# Calcolo efficienza: quanto capitale lavora per me per ogni euro che "sento" uscire?
-leva_fondo = investito_lordo_fondo / costo_netto_fondo if costo_netto_fondo > 0 else 0
-leva_pac = 1.0 # Nel pac investo esattamente ciò che spendo (1:1)
+# Capitale che lavora = Soldi che entrano nell'investimento
+capitale_annuo_fondo = versamento_fondo + tfr_annuo + contributo_azienda
+capitale_annuo_pac = versamento_pac + tfr_annuo
 
 df_costi = pd.DataFrame({
-    "Metrica": ["Investimento Lordo Annuo", "Costo Netto (Sacrificio)", "Vantaggio Fiscale", "Coefficiente Efficienza (Leva)"],
-    "Fondo Pensione": [investito_lordo_fondo, costo_netto_fondo, risparmio_irpef_annuo, leva_fondo],
-    "PAC + TFR Investito": [investito_lordo_pac, investito_lordo_pac, 0, leva_pac]
+    "Metrica": ["Sacrificio dal Netto (Costo)", "Capitale Investito Annuo (TFR+Azienda inclusi)", "Vantaggio Fiscale Annuo"],
+    "Fondo Pensione": [costo_sacrificio_fondo, capitale_annuo_fondo, risparmio_irpef_annuo],
+    "PAC + TFR": [costo_sacrificio_pac, capitale_annuo_pac, 0]
 })
-st.table(df_costi.style.format({"Fondo Pensione": "{:,.2f}", "PAC + TFR Investito": "{:,.2f}"}))
+st.table(df_costi.style.format({ "Fondo Pensione": "{:,.2f}", "PAC + TFR": "{:,.2f}"}))
 
 # --- MOTORE DI CALCOLO ---
 capitale_fondo = 0.0
