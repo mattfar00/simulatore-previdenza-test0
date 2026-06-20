@@ -108,7 +108,7 @@ for anno in range(1, durata + 1):
 df = pd.DataFrame(dati_grafico)
 
 # --- 1. GRAFICO ALTO: CAPITALE INVESTITO ---
-st.subheader("📊 Confronto Capitale Investito (Netto Tasse)")
+st.subheader(" Confronto Capitale Investito (Netto Tasse)")
 fig1 = go.Figure()
 fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Investimento Fondo Netto"], name='Capitale Fondo (+IRPEF)', line=dict(color='#2ca02c', width=4)))
 fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Investimento PAC+TFR Netto"], name='Capitale PAC + TFR', line=dict(color='#1f77b4', width=4)))
@@ -118,7 +118,7 @@ st.plotly_chart(fig1, use_container_width=True, key="grafico_investimento")
 # --- 2. SEZIONE INTERMEDIA: DISPONIBILITÀ E LIQUIDITÀ ---
 col1, col2 = st.columns(2)
 with col1:
-    st.subheader("💰 Disponibilità Mensile Residua")
+    st.subheader(" Disponibilità Mensile Residua")
     fig2 = go.Figure(data=[
         go.Bar(name='Fondo Pensione', x=['Netto Mensile'], y=[df["Netto Mensile Fondo"].iloc[-1]], marker_color='#2ca02c'),
         go.Bar(name='PAC Indipendente', x=['Netto Mensile'], y=[df["Netto Mensile PAC"].iloc[-1]], marker_color='#1f77b4')
@@ -126,14 +126,14 @@ with col1:
     st.plotly_chart(fig2, use_container_width=True, key="barre_mensili")
 
 with col2:
-    st.subheader("📈 Liquidità Cumulata (In Banca)")
+    st.subheader("📈 Liquidità totale netta no spese (In Banca)")
     fig3 = go.Figure()
     fig3.add_trace(go.Scatter(x=df["Anno"], y=df["Liquidità Fondo"], name='Cash Fondo', line=dict(color='#98df8a')))
     fig3.add_trace(go.Scatter(x=df["Anno"], y=df["Liquidità PAC"], name='Cash PAC', line=dict(color='#aec7e8')))
     st.plotly_chart(fig3, use_container_width=True, key="linee_cash")
 
 # --- 3. GRAFICO BASSO: RICCHEZZA TOTALE ---
-st.subheader("🚀 Ricchezza Totale (Capitale + Cash in Banca)")
+st.subheader(" Ricchezza Totale (Capitale + Cash flow stipendi netti)")
 fig4 = go.Figure()
 fig4.add_trace(go.Scatter(x=df["Anno"], y=df["Ricchezza Totale Fondo"], name='Ricchezza Tot. Fondo', line=dict(color='#2ca02c', width=4, dash='dash')))
 fig4.add_trace(go.Scatter(x=df["Anno"], y=df["Ricchezza Totale PAC"], name='Ricchezza Tot. PAC', line=dict(color='#1f77b4', width=4, dash='dash')))
