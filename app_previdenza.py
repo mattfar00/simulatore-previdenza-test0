@@ -1,12 +1,4 @@
-Certamente. Ho riorganizzato il layout seguendo esattamente la tua richiesta:
 
-1. **Grafico in alto:** Solo il confronto tra **Capitale Fondo** (netto tasse uscita) vs **Capitale PAC+TFR** (netto tasse plusvalenze/tassazione separata). Qui vedi la crescita pura degli investimenti.
-2. **Sezione intermedia:** Analisi della **Disponibilità Mensile** e della **Liquidità Cumulata** (il cash che ti resta in banca).
-3. **Sezione finale:** Il calcolo della **Ricchezza Totale** (Cash + Investimenti) con il relativo grafico per il confronto definitivo.
-
-Ecco il codice completo:
-
-```python
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -150,4 +142,4 @@ st.success(f"**Risultato finale dopo {durata} anni:**")
 st.write(f"- Ricchezza Finale Fondo: **€ {df.iloc[-1]['Ricchezza Totale Fondo']:,.0f}**")
 st.write(f"- Ricchezza Finale PAC+TFR: **€ {df.iloc[-1]['Ricchezza Totale PAC']:,.0f}**")
 
-```
+
