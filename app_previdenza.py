@@ -8,7 +8,35 @@ st.title(" Simulatore: Fondo Pensione vs PAC")
 
 # --- SIDEBAR ---
 st.sidebar.header("1. Parametri Fiscali")
-aliquota_irpef = st.sidebar.selectbox("Aliquota IRPEF (%)", [23, 33, 43], index=1)
+ral = st.sidebar.number_input("RAL Lorda Annuale (€)", value=40000, step=1000)
+
+# Calcolo automatico imposte
+inps_rate = 0.0919 # Contributo INPS standard dipendente
+inps_annuo = ral * inps_rate
+imponibile_irpef = ral - inps_annuo
+
+def calcola_irpef(imponibile):
+    tax = 0
+    if imponibile <= 28000:
+        tax = imponibile * 0.23
+    elif imponibile <= 50000:
+        tax = (28000 * 0.23) + ((imponibile - 28000) * 0.33)
+    else:
+        tax = (28000 * 0.23) + (22000 * 0.33) + ((imponibile - 50000) * 0.43)
+    return tax
+
+irpef_annua = calcola_irpef(imponibile_irpef)
+netto_annuo = ral - inps_annuo - irpef_annua
+stipendio_netto_mensile = netto_annuo / 12
+
+# Calcolo Aliquota Marginale per deduzione (per la simulazione)
+if imponibile_irpef <= 28000: aliquota_marginale = 23
+elif imponibile_irpef <= 50000: aliquota_marginale = 33
+else: aliquota_marginale = 43
+
+st.sidebar.write(f"**Netto Mensile Stimato:** € {stipendio_netto_mensile:,.0f}")
+st.sidebar.write(f"**Aliquota Marginale Applicata:** {aliquota_marginale}%")
+
 limite_deducibilita = 5300
 
 st.sidebar.header("2. Fondo Pensione")
@@ -23,10 +51,9 @@ tassa_uscita_fondo = st.sidebar.slider("Tassazione Uscita Fondo (%)", 9, 23, 12,
 st.sidebar.header("3. PAC Indipendente (ETF)")
 versamento_pac = st.sidebar.number_input("Versamento PAC Annuo (€)", min_value=0, value=3445, step=100)
 rend_pac = st.sidebar.slider("Rendimento Lordo PAC (%)", 1.0, 10.0, 7.0, 0.1) / 100
-costo_perc_pac = st.sidebar.number_input("TER+costo anno PAC (%)", value=0.20, step=0.01) / 100
+costo_perc_pac = st.sidebar.number_input("TER PAC (%) - Costi di gestione all'anno", value=0.20, step=0.01) / 100
 tassa_uscita_pac = st.sidebar.slider("Tassazione Plusvalenze PAC (%)", 0, 26, 26, help="Tassa sui guadagni realizzati")
 
-# Rendimento TFR separato
 rend_tfr = st.sidebar.slider("Rendimento atteso TFR (se investito separatamente) (%)", 0.0, 7.0, 3.0, 0.1) / 100
 
 st.sidebar.header("4. Orizzonte Temporale")
@@ -34,23 +61,22 @@ durata = st.sidebar.slider("Anni di investimento", 1, 40, 20)
 
 # --- CALCOLO COSTI ---
 quota_dedotta = min(versamento_fondo + contributo_azienda, limite_deducibilita)
-risparmio_irpef_annuo = quota_dedotta * (aliquota_irpef / 100)
-costo_netto_fondo = max(0, versamento_fondo - risparmio_irpef_annuo)
+risparmio_irpef_annuo = quota_dedotta * (aliquota_marginale / 100)
+costo_netto_fondo_annuo = max(0, versamento_fondo - risparmio_irpef_annuo)
+
+# Analisi Mensile
+disponibile_mensile_fondo = stipendio_netto_mensile - (costo_netto_fondo_annuo / 12)
+disponibile_mensile_pac = stipendio_netto_mensile - (versamento_pac / 12)
 
 # --- ANALISI COSTI ATTIVI ---
 st.subheader("💡 Analisi Efficienza (Sacrificio vs Capitale Investito)")
-# Costo = Sacrificio reale dal netto mensile
-costo_sacrificio_fondo = costo_netto_fondo
-costo_sacrificio_pac = versamento_pac
-
-# Capitale che lavora = Soldi che entrano nell'investimento
 capitale_annuo_fondo = versamento_fondo + tfr_annuo + contributo_azienda
 capitale_annuo_pac = versamento_pac + tfr_annuo
 
 df_costi = pd.DataFrame({
-    "Metrica": ["Sacrificio dal Netto (Costo)", "Capitale Investito Annuo (TFR+Azienda inclusi)", "Vantaggio Fiscale Annuo"],
-    "Fondo Pensione": [costo_sacrificio_fondo, capitale_annuo_fondo, risparmio_irpef_annuo],
-    "PAC + TFR": [costo_sacrificio_pac, capitale_annuo_pac, 0]
+    "Metrica": ["Sacrificio dal Netto (Costo)", "Capitale Investito Annuo (TFR+Az. incl.)", "Vantaggio Fiscale Annuo"],
+    "Fondo Pensione": [costo_netto_fondo_annuo, capitale_annuo_fondo, risparmio_irpef_annuo],
+    "PAC + TFR": [versamento_pac, capitale_annuo_pac, 0]
 })
 st.table(df_costi.style.format({ "Fondo Pensione": "{:,.2f}", "PAC + TFR": "{:,.2f}"}))
 
@@ -61,6 +87,7 @@ totale_investito_pac = 0.0
 capitale_tfr_investito = 0.0
 risparmio_irpef_accumulato = 0.0
 dati_grafico = []
+imposta_bollo = 0.002 
 
 for anno in range(1, durata + 1):
     capitale_fondo += (versamento_fondo + tfr_annuo + contributo_azienda)
@@ -70,11 +97,11 @@ for anno in range(1, durata + 1):
     totale_investito_pac += versamento_pac
     capitale_pac_volontario += versamento_pac
     capitale_pac_volontario += (capitale_pac_volontario * rend_pac)
-    capitale_pac_volontario -= (capitale_pac_volontario * costo_perc_pac)
+    capitale_pac_volontario -= (capitale_pac_volontario * (costo_perc_pac + imposta_bollo))
     
     capitale_tfr_investito += tfr_annuo
     capitale_tfr_investito += (capitale_tfr_investito * rend_tfr)
-    capitale_tfr_investito -= (capitale_tfr_investito * costo_perc_pac)
+    capitale_tfr_investito -= (capitale_tfr_investito * (costo_perc_pac + imposta_bollo))
     
     risparmio_irpef_accumulato += risparmio_irpef_annuo
     
@@ -89,12 +116,18 @@ for anno in range(1, durata + 1):
 df = pd.DataFrame(dati_grafico)
 
 # --- RISULTATI FINALI E GRAFICI ---
-# Calcolo netto fondo + risparmio fiscale accumulato
 netto_fondo_dopo_tasse = capitale_fondo * (1 - (tassa_uscita_fondo / 100))
 final_fondo_totale = netto_fondo_dopo_tasse + risparmio_irpef_accumulato
-
 plusvalenza_pac = max(0, capitale_pac_volontario - totale_investito_pac)
 final_pac_netto = capitale_pac_volontario - (plusvalenza_pac * (tassa_uscita_pac / 100))
+
+st.subheader("💰 Analisi Disponibilità Mensile")
+fig_mensile = go.Figure(data=[
+    go.Bar(name='Fondo Pensione', x=['Netto Residuo Mensile'], y=[disponibile_mensile_fondo], marker_color='#2ca02c'),
+    go.Bar(name='PAC Indipendente', x=['Netto Residuo Mensile'], y=[disponibile_mensile_pac], marker_color='#1f77b4')
+])
+fig_mensile.update_layout(title="Quanto ti rimane in tasca ogni mese?", barmode='group', yaxis_title="Euro (€)")
+st.plotly_chart(fig_mensile, use_container_width=True, key="grafico_mensile")
 
 st.subheader("🏁 Risultato Finale (Netto Tasse + Beneficio Fiscale)")
 col_a, col_b = st.columns(2)
