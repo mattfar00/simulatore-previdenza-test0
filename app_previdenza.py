@@ -23,7 +23,7 @@ tassa_uscita_fondo = st.sidebar.slider("Tassazione Uscita Fondo (%)", 9, 23, 12,
 st.sidebar.header("3. PAC Indipendente (ETF)")
 versamento_pac = st.sidebar.number_input("Versamento PAC Annuo (€)", min_value=0, value=3445, step=100)
 rend_pac = st.sidebar.slider("Rendimento Lordo PAC (%)", 1.0, 10.0, 7.0, 0.1) / 100
-costo_perc_pac = st.sidebar.number_input("TER PAC (%)", value=0.20, step=0.01) / 100
+costo_perc_pac = st.sidebar.number_input("TER+costo anno PAC (%)", value=0.20, step=0.01) / 100
 tassa_uscita_pac = st.sidebar.slider("Tassazione Plusvalenze PAC (%)", 0, 26, 26, help="Tassa sui guadagni realizzati")
 
 # Rendimento TFR separato
