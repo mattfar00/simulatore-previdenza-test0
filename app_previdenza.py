@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Simulatore R.I.T.A. Pro", layout="wide")
-st.title("🚀 Confronto Previdenziale: Fondo vs PAC")
+st.title(" Confronto Previdenziale: Fondo vs PAC")
 
 # --- SIDEBAR: FISCO E REDDITO ---
 st.sidebar.header("1. Parametri Fiscali e Reddito")
@@ -13,25 +13,25 @@ ral = st.sidebar.number_input("RAL Lorda Annuale (€)", value=40000, step=1000)
 
 inps_rate = 0.0919 
 inps_annuo = ral * inps_rate
-imponibile_irpef = ral - inps_annuo
+imponibile_irpef_lordo = ral - inps_annuo
 
-def calcola_irpef(imponibile):
+# Funzione precisa per calcolo IRPEF totale (Scaglioni 2026)
+def calcola_irpef_totale(imponibile):
+    imponibile = max(0, imponibile)
     if imponibile <= 28000:
-        tax = imponibile * 0.23
-        aliquota_marginale = 23
+        return imponibile * 0.23
     elif imponibile <= 50000:
-        tax = (28000 * 0.23) + ((imponibile - 28000) * 0.33)
-        aliquota_marginale = 33
+        return (28000 * 0.23) + ((imponibile - 28000) * 0.33)
     else:
-        tax = (28000 * 0.23) + (22000 * 0.33) + ((imponibile - 50000) * 0.43)
-        aliquota_marginale = 43
-    return tax, aliquota_marginale
+        return (28000 * 0.23) + (22000 * 0.33) + ((imponibile - 50000) * 0.43)
 
-irpef_annua, aliquota_marginale = calcola_irpef(imponibile_irpef)
-stipendio_netto_mensile = (ral - inps_annuo - irpef_annua) / 12
+# Calcolo per la UI (Netto mensile stima)
+irpef_annua = calcola_irpef_totale(imponibile_irpef_lordo)
+detrazione = 1910 + (28000 - ral) * 0.05 if ral < 28000 else 1910
+irpef_netta = max(0, irpef_annua - detrazione)
+stipendio_netto_mensile = (ral - inps_annuo - irpef_netta) / 12
 
-st.sidebar.write(f"**Netto Mensile:** € {stipendio_netto_mensile:,.0f}")
-st.sidebar.write(f"**Aliquota Marginale:** {aliquota_marginale}%")
+st.sidebar.write(f"**Netto Mensile (Stima):** € {stipendio_netto_mensile:,.0f}")
 limite_deducibilita = 5300
 
 # --- INVESTIMENTI ---
@@ -55,13 +55,14 @@ tassa_tfr = st.sidebar.slider("Tassazione TFR (Separata) (%)", 23, 43, 30)
 st.sidebar.header("4. Orizzonte Temporale")
 durata = st.sidebar.slider("Anni di investimento", 1, 40, 20)
 
-# --- MOTORE DI CALCOLO ---
-risparmio_fiscale_annuo = min(versamento_fondo + contributo_azienda, limite_deducibilita) * (aliquota_marginale / 100)
-costo_reale_fondo_annuo = versamento_fondo - risparmio_fiscale_annuo
-costo_reale_pac_annuo = versamento_pac
+# --- CALCOLO FISCALE PRECISO ---
+# Il risparmio fiscale è la differenza tra le tasse pagate con e senza deduzione
+quota_dedotta = min(versamento_fondo + contributo_azienda, limite_deducibilita)
+risparmio_fiscale_annuo = calcola_irpef_totale(imponibile_irpef_lordo) - calcola_irpef_totale(imponibile_irpef_lordo - quota_dedotta)
 
+costo_reale_fondo_annuo = versamento_fondo - risparmio_fiscale_annuo
 disponibile_mensile_fondo = stipendio_netto_mensile - (costo_reale_fondo_annuo / 12)
-disponibile_mensile_pac = stipendio_netto_mensile - (costo_reale_pac_annuo / 12)
+disponibile_mensile_pac = stipendio_netto_mensile - (versamento_pac / 12)
 
 capitale_fondo = 0.0
 capitale_pac = 0.0
@@ -141,5 +142,3 @@ st.plotly_chart(fig4, use_container_width=True, key="grafico_ricchezza_totale")
 st.success(f"**Risultato finale dopo {durata} anni:**")
 st.write(f"- Ricchezza Finale Fondo: **€ {df.iloc[-1]['Ricchezza Totale Fondo']:,.0f}**")
 st.write(f"- Ricchezza Finale PAC+TFR: **€ {df.iloc[-1]['Ricchezza Totale PAC']:,.0f}**")
-
-
