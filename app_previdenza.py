@@ -11,7 +11,7 @@ st.sidebar.header("1. Parametri Fiscali")
 ral = st.sidebar.number_input("RAL Lorda Annuale (€)", value=40000, step=1000)
 
 # Calcolo automatico imposte
-inps_rate = 0.0919 # Contributo INPS standard dipendente
+inps_rate = 0.0919 
 inps_annuo = ral * inps_rate
 imponibile_irpef = ral - inps_annuo
 
@@ -29,7 +29,6 @@ irpef_annua = calcola_irpef(imponibile_irpef)
 netto_annuo = ral - inps_annuo - irpef_annua
 stipendio_netto_mensile = netto_annuo / 12
 
-# Calcolo Aliquota Marginale per deduzione (per la simulazione)
 if imponibile_irpef <= 28000: aliquota_marginale = 23
 elif imponibile_irpef <= 50000: aliquota_marginale = 33
 else: aliquota_marginale = 43
@@ -110,7 +109,9 @@ for anno in range(1, durata + 1):
         "Capitale Fondo": capitale_fondo,
         "Capitale PAC Volontario": capitale_pac_volontario,
         "Capitale TFR Investito": capitale_tfr_investito,
-        "Beneficio Totale (Fondo + IRPEF)": capitale_fondo + risparmio_irpef_accumulato
+        "Beneficio Totale (Fondo + IRPEF)": capitale_fondo + risparmio_irpef_accumulato,
+        "Netto Mensile Fondo": disponibile_mensile_fondo,
+        "Netto Mensile PAC": disponibile_mensile_pac
     })
 
 df = pd.DataFrame(dati_grafico)
@@ -121,13 +122,13 @@ final_fondo_totale = netto_fondo_dopo_tasse + risparmio_irpef_accumulato
 plusvalenza_pac = max(0, capitale_pac_volontario - totale_investito_pac)
 final_pac_netto = capitale_pac_volontario - (plusvalenza_pac * (tassa_uscita_pac / 100))
 
-st.subheader("💰 Analisi Disponibilità Mensile")
-fig_mensile = go.Figure(data=[
-    go.Bar(name='Fondo Pensione', x=['Netto Residuo Mensile'], y=[disponibile_mensile_fondo], marker_color='#2ca02c'),
-    go.Bar(name='PAC Indipendente', x=['Netto Residuo Mensile'], y=[disponibile_mensile_pac], marker_color='#1f77b4')
-])
-fig_mensile.update_layout(title="Quanto ti rimane in tasca ogni mese?", barmode='group', yaxis_title="Euro (€)")
-st.plotly_chart(fig_mensile, use_container_width=True, key="grafico_mensile")
+# --- ANALISI DISPONIBILITÀ MENSILE NEL TEMPO ---
+st.subheader("💰 Analisi Disponibilità Mensile nel Tempo")
+fig_mensile = go.Figure()
+fig_mensile.add_trace(go.Scatter(x=df["Anno"], y=df["Netto Mensile Fondo"], name='Netto Mensile Fondo', line=dict(color='#2ca02c', width=3)))
+fig_mensile.add_trace(go.Scatter(x=df["Anno"], y=df["Netto Mensile PAC"], name='Netto Mensile PAC', line=dict(color='#1f77b4', width=3)))
+fig_mensile.update_layout(title="Disponibilità mensile residua (costante nel tempo)", xaxis_title="Anni", yaxis_title="Euro (€)")
+st.plotly_chart(fig_mensile, use_container_width=True, key="grafico_mensile_tempo")
 
 st.subheader("🏁 Risultato Finale (Netto Tasse + Beneficio Fiscale)")
 col_a, col_b = st.columns(2)
