@@ -4,12 +4,13 @@ import plotly.graph_objects as go
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Simulatore R.I.T.A. Pro", layout="wide")
-st.title("Simulatore: Ricchezza Totale (Fondo vs PAC)")
+st.title("🚀 Simulatore: Ricchezza Totale (Fondo vs PAC)")
 
 # --- SIDEBAR: FISCO E REDDITO ---
 st.sidebar.header("1. Parametri Fiscali e Reddito")
 ral = st.sidebar.number_input("RAL Lorda Annuale (€)", value=40000, step=1000)
 
+# Calcolo INPS e IRPEF Progressiva
 inps_rate = 0.0919 
 inps_annuo = ral * inps_rate
 imponibile_irpef = ral - inps_annuo
@@ -71,24 +72,32 @@ dati_grafico = []
 imposta_bollo = 0.002 
 
 for anno in range(1, durata + 1):
+    # Fondo
     capitale_fondo += (versamento_fondo + tfr_annuo + contributo_azienda)
     capitale_fondo += (capitale_fondo * rend_fondo) 
     capitale_fondo -= (capitale_fondo * costo_perc_fondo + costo_fisso_fondo)
     
+    # PAC (con tassazione su plusvalenza alla fine)
     capitale_pac += versamento_pac
     capitale_pac += (capitale_pac * rend_pac)
     capitale_pac -= (capitale_pac * (costo_perc_pac + imposta_bollo))
     
+    # TFR Investito (con tassazione su plusvalenza alla fine)
     capitale_tfr += tfr_annuo
     capitale_tfr += (capitale_tfr * rend_tfr)
     capitale_tfr -= (capitale_tfr * (costo_perc_pac + imposta_bollo))
     
+    # Liquidità
     liquidita_cumulata_fondo += (disponibile_mensile_fondo * 12)
     liquidita_cumulata_pac += (disponibile_mensile_pac * 12)
     
+    # Calcolo Ricchezza Totale
     netto_fondo_finale = (capitale_fondo * (1 - (tassa_uscita_fondo / 100))) + (risparmio_fiscale_annuo * anno)
-    plusvalenza_pac = max(0, (capitale_pac + capitale_tfr) - (versamento_pac * anno + tfr_annuo * anno))
-    netto_pac_finale = (capitale_pac + capitale_tfr) - (plusvalenza_pac * (tassa_uscita_pac / 100))
+    # Tassazione PAC/TFR: applicata solo sulla plusvalenza totale generata dai due componenti
+    capitale_investito_totale = capitale_pac + capitale_tfr
+    versato_totale = (versamento_pac * anno) + (tfr_annuo * anno)
+    plusvalenza_pac_totale = max(0, capitale_investito_totale - versato_totale)
+    netto_pac_finale = capitale_investito_totale - (plusvalenza_pac_totale * (tassa_uscita_pac / 100))
     
     dati_grafico.append({
         "Anno": anno,
@@ -97,16 +106,28 @@ for anno in range(1, durata + 1):
         "Netto Mensile Fondo": disponibile_mensile_fondo,
         "Netto Mensile PAC": disponibile_mensile_pac,
         "Cumulato Mensile Fondo": liquidita_cumulata_fondo,
-        "Cumulato Mensile PAC": liquidita_cumulata_pac
+        "Cumulato Mensile PAC": liquidita_cumulata_pac,
+        "Beneficio Totale Fondo": capitale_fondo + (risparmio_fiscale_annuo * anno),
+        "Capitale Fondo": capitale_fondo,
+        "Capitale PAC": capitale_pac,
+        "Capitale TFR": capitale_tfr
     })
 
 df = pd.DataFrame(dati_grafico)
 
-# --- VISUALIZZAZIONE ---
-st.subheader("📊 Ricchezza Totale (Cash Residuo + Capitale Investito)")
+# --- OUTPUT VISUALIZZAZIONE ---
+st.subheader("📊 Analisi Efficienza")
+df_costi = pd.DataFrame({
+    "Metrica": ["Sacrificio dal Netto (Costo)", "Capitale Investito Annuo", "Vantaggio Fiscale Annuo"],
+    "Fondo Pensione": [costo_reale_fondo_annuo, versamento_fondo + tfr_annuo + contributo_azienda, risparmio_fiscale_annuo],
+    "PAC + TFR": [costo_reale_pac_annuo, versamento_pac + tfr_annuo, 0]
+})
+st.table(df_costi.style.format({ "Fondo Pensione": "{:,.2f}", "PAC + TFR": "{:,.2f}"}))
+
+st.subheader("📊 Ricchezza Totale (Cash Residuo + Capitale)")
 fig1 = go.Figure()
-fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Ricchezza Fondo"], name='Fondo (Totale)', line=dict(color='#2ca02c', width=4)))
-fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Ricchezza PAC+TFR"], name='PAC+TFR (Totale)', line=dict(color='#1f77b4', width=4)))
+fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Ricchezza Fondo"], name='Ricchezza Totale (Fondo)', line=dict(color='#2ca02c', width=4)))
+fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Ricchezza PAC+TFR"], name='Ricchezza Totale (PAC+TFR)', line=dict(color='#1f77b4', width=4)))
 st.plotly_chart(fig1, use_container_width=True, key="grafico_totale")
 
 col1, col2 = st.columns(2)
@@ -125,5 +146,5 @@ with col2:
     st.plotly_chart(fig3, use_container_width=True, key="grafico_linee")
 
 st.info(f"**Risultato finale dopo {durata} anni:**")
-st.write(f"- Ricchezza Totale Fondo: **€ {df.iloc[-1]['Ricchezza Fondo']:,.0f}**")
-st.write(f"- Ricchezza Totale PAC+TFR: **€ {df.iloc[-1]['Ricchezza PAC+TFR']:,.0f}**")
+st.write(f"- Ricchezza Totale Fondo (Cash+Investimento): **€ {df.iloc[-1]['Ricchezza Fondo']:,.0f}**")
+st.write(f"- Ricchezza Totale PAC+TFR (Cash+Investimento): **€ {df.iloc[-1]['Ricchezza PAC+TFR']:,.0f}**")
