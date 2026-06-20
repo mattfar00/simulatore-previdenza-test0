@@ -50,7 +50,6 @@ rend_pac = st.sidebar.slider("Rendimento Lordo PAC (%)", 1.0, 10.0, 7.0, 0.1) / 
 costo_perc_pac = st.sidebar.number_input("TER PAC (%) - Gestione annua", value=0.20, step=0.01) / 100
 tassa_uscita_pac = st.sidebar.slider("Tassazione Plusvalenze PAC (%)", 0, 26, 26)
 rend_tfr = st.sidebar.slider("Rendimento atteso TFR (investito separatamente) (%)", 0.0, 7.0, 3.0, 0.1) / 100
-# AGGIUNTA TASSAZIONE TFR (Tassazione separata)
 tassa_tfr = st.sidebar.slider("Tassazione TFR (Separata) (%)", 23, 43, 30)
 
 st.sidebar.header("4. Orizzonte Temporale")
@@ -74,25 +73,28 @@ dati_grafico = []
 imposta_bollo = 0.002 
 
 for anno in range(1, durata + 1):
+    # Fondo
     capitale_fondo += (versamento_fondo + tfr_annuo + contributo_azienda)
     capitale_fondo += (capitale_fondo * rend_fondo) 
     capitale_fondo -= (capitale_fondo * costo_perc_fondo + costo_fisso_fondo)
     
+    # PAC
     capitale_pac += versamento_pac
     capitale_pac += (capitale_pac * rend_pac)
     capitale_pac -= (capitale_pac * (costo_perc_pac + imposta_bollo))
     
+    # TFR Investito
     capitale_tfr += tfr_annuo
     capitale_tfr += (capitale_tfr * rend_tfr)
     capitale_tfr -= (capitale_tfr * (costo_perc_pac + imposta_bollo))
     
+    # Liquidità
     liquidita_cumulata_fondo += (disponibile_mensile_fondo * 12)
     liquidita_cumulata_pac += (disponibile_mensile_pac * 12)
     
-    # Calcolo Ricchezza Totale
+    # Ricchezza Totale
     netto_fondo_finale = (capitale_fondo * (1 - (tassa_uscita_fondo / 100))) + (risparmio_fiscale_annuo * anno)
     
-    # PAC + TFR separati nel calcolo tasse
     plusvalenza_pac = max(0, capitale_pac - (versamento_pac * anno))
     netto_pac_finale = capitale_pac - (plusvalenza_pac * (tassa_uscita_pac / 100))
     netto_tfr_finale = capitale_tfr * (1 - (tassa_tfr / 100))
@@ -133,4 +135,4 @@ with col2:
 
 st.info(f"**Risultato finale dopo {durata} anni:**")
 st.write(f"- Ricchezza Totale Fondo (Cash+Investimento): **€ {df.iloc[-1]['Ricchezza Fondo']:,.0f}**")
-st.write(f"- Ricchezza Totale PAC+TFR (Cash+Investimento): **€ {df.iloc[-1]['Ric
+st.write(f"- Ricchezza Totale PAC+TFR (Cash+Investimento): **€ {df.iloc[-1]['Ricchezza PAC+TFR']:,.0f}**")
