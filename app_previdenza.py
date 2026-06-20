@@ -1,16 +1,24 @@
+Certamente. Ho riorganizzato il layout seguendo esattamente la tua richiesta:
+
+1. **Grafico in alto:** Solo il confronto tra **Capitale Fondo** (netto tasse uscita) vs **Capitale PAC+TFR** (netto tasse plusvalenze/tassazione separata). Qui vedi la crescita pura degli investimenti.
+2. **Sezione intermedia:** Analisi della **Disponibilità Mensile** e della **Liquidità Cumulata** (il cash che ti resta in banca).
+3. **Sezione finale:** Il calcolo della **Ricchezza Totale** (Cash + Investimenti) con il relativo grafico per il confronto definitivo.
+
+Ecco il codice completo:
+
+```python
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Simulatore R.I.T.A. Pro", layout="wide")
-st.title("🚀 Simulatore: Ricchezza Totale (Fondo vs PAC)")
+st.title("🚀 Confronto Previdenziale: Fondo vs PAC")
 
 # --- SIDEBAR: FISCO E REDDITO ---
 st.sidebar.header("1. Parametri Fiscali e Reddito")
 ral = st.sidebar.number_input("RAL Lorda Annuale (€)", value=40000, step=1000)
 
-# Calcolo INPS e IRPEF Progressiva
 inps_rate = 0.0919 
 inps_annuo = ral * inps_rate
 imponibile_irpef = ral - inps_annuo
@@ -55,7 +63,7 @@ tassa_tfr = st.sidebar.slider("Tassazione TFR (Separata) (%)", 23, 43, 30)
 st.sidebar.header("4. Orizzonte Temporale")
 durata = st.sidebar.slider("Anni di investimento", 1, 40, 20)
 
-# --- CALCOLO COSTI ---
+# --- MOTORE DI CALCOLO ---
 risparmio_fiscale_annuo = min(versamento_fondo + contributo_azienda, limite_deducibilita) * (aliquota_marginale / 100)
 costo_reale_fondo_annuo = versamento_fondo - risparmio_fiscale_annuo
 costo_reale_pac_annuo = versamento_pac
@@ -63,7 +71,6 @@ costo_reale_pac_annuo = versamento_pac
 disponibile_mensile_fondo = stipendio_netto_mensile - (costo_reale_fondo_annuo / 12)
 disponibile_mensile_pac = stipendio_netto_mensile - (costo_reale_pac_annuo / 12)
 
-# --- MOTORE DI CALCOLO ---
 capitale_fondo = 0.0
 capitale_pac = 0.0
 capitale_tfr = 0.0
@@ -73,66 +80,74 @@ dati_grafico = []
 imposta_bollo = 0.002 
 
 for anno in range(1, durata + 1):
-    # Fondo
     capitale_fondo += (versamento_fondo + tfr_annuo + contributo_azienda)
     capitale_fondo += (capitale_fondo * rend_fondo) 
     capitale_fondo -= (capitale_fondo * costo_perc_fondo + costo_fisso_fondo)
     
-    # PAC
     capitale_pac += versamento_pac
     capitale_pac += (capitale_pac * rend_pac)
     capitale_pac -= (capitale_pac * (costo_perc_pac + imposta_bollo))
     
-    # TFR Investito
     capitale_tfr += tfr_annuo
     capitale_tfr += (capitale_tfr * rend_tfr)
     capitale_tfr -= (capitale_tfr * (costo_perc_pac + imposta_bollo))
     
-    # Liquidità
     liquidita_cumulata_fondo += (disponibile_mensile_fondo * 12)
     liquidita_cumulata_pac += (disponibile_mensile_pac * 12)
     
-    # Ricchezza Totale
-    netto_fondo_finale = (capitale_fondo * (1 - (tassa_uscita_fondo / 100))) + (risparmio_fiscale_annuo * anno)
-    
-    plusvalenza_pac = max(0, capitale_pac - (versamento_pac * anno))
-    netto_pac_finale = capitale_pac - (plusvalenza_pac * (tassa_uscita_pac / 100))
-    netto_tfr_finale = capitale_tfr * (1 - (tassa_tfr / 100))
+    # Netto Investimenti (già tassati)
+    inv_fondo_netto = (capitale_fondo * (1 - (tassa_uscita_fondo / 100))) + (risparmio_fiscale_annuo * anno)
+    plus_pac = max(0, capitale_pac - (versamento_pac * anno))
+    inv_pac_tfr_netto = (capitale_pac - (plus_pac * (tassa_uscita_pac / 100))) + (capitale_tfr * (1 - (tassa_tfr / 100)))
     
     dati_grafico.append({
         "Anno": anno,
-        "Ricchezza Fondo": liquidita_cumulata_fondo + netto_fondo_finale,
-        "Ricchezza PAC+TFR": liquidita_cumulata_pac + netto_pac_finale + netto_tfr_finale,
+        "Investimento Fondo Netto": inv_fondo_netto,
+        "Investimento PAC+TFR Netto": inv_pac_tfr_netto,
+        "Ricchezza Totale Fondo": liquidita_cumulata_fondo + inv_fondo_netto,
+        "Ricchezza Totale PAC": liquidita_cumulata_pac + inv_pac_tfr_netto,
+        "Liquidità Fondo": liquidita_cumulata_fondo,
+        "Liquidità PAC": liquidita_cumulata_pac,
         "Netto Mensile Fondo": disponibile_mensile_fondo,
-        "Netto Mensile PAC": disponibile_mensile_pac,
-        "Cumulato Mensile Fondo": liquidita_cumulata_fondo,
-        "Cumulato Mensile PAC": liquidita_cumulata_pac
+        "Netto Mensile PAC": disponibile_mensile_pac
     })
 
 df = pd.DataFrame(dati_grafico)
 
-# --- VISUALIZZAZIONE ---
-st.subheader("📊 Ricchezza Totale (Cash Residuo + Capitale Investito)")
+# --- 1. GRAFICO ALTO: CAPITALE INVESTITO ---
+st.subheader("📊 Confronto Capitale Investito (Netto Tasse)")
 fig1 = go.Figure()
-fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Ricchezza Fondo"], name='Ricchezza Totale (Fondo)', line=dict(color='#2ca02c', width=4)))
-fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Ricchezza PAC+TFR"], name='Ricchezza Totale (PAC+TFR)', line=dict(color='#1f77b4', width=4)))
-st.plotly_chart(fig1, use_container_width=True, key="grafico_totale")
+fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Investimento Fondo Netto"], name='Capitale Fondo (+IRPEF)', line=dict(color='#2ca02c', width=4)))
+fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Investimento PAC+TFR Netto"], name='Capitale PAC + TFR', line=dict(color='#1f77b4', width=4)))
+fig1.update_layout(xaxis_title="Anni", yaxis_title="Euro (€)", hovermode="x unified")
+st.plotly_chart(fig1, use_container_width=True, key="grafico_investimento")
 
+# --- 2. SEZIONE INTERMEDIA: DISPONIBILITÀ E LIQUIDITÀ ---
 col1, col2 = st.columns(2)
 with col1:
-    st.subheader("💰 Disponibilità Mensile")
+    st.subheader("💰 Disponibilità Mensile Residua")
     fig2 = go.Figure(data=[
-        go.Bar(name='Fondo Pensione', x=['Residuo Mensile'], y=[df["Netto Mensile Fondo"].iloc[-1]], marker_color='#2ca02c'),
-        go.Bar(name='PAC Indipendente', x=['Residuo Mensile'], y=[df["Netto Mensile PAC"].iloc[-1]], marker_color='#1f77b4')
+        go.Bar(name='Fondo Pensione', x=['Netto Mensile'], y=[df["Netto Mensile Fondo"].iloc[-1]], marker_color='#2ca02c'),
+        go.Bar(name='PAC Indipendente', x=['Netto Mensile'], y=[df["Netto Mensile PAC"].iloc[-1]], marker_color='#1f77b4')
     ])
-    st.plotly_chart(fig2, use_container_width=True, key="grafico_barre")
-with col2:
-    st.subheader("📈 Liquidità Cumulata")
-    fig3 = go.Figure()
-    fig3.add_trace(go.Scatter(x=df["Anno"], y=df["Cumulato Mensile Fondo"], name='Cumulato Fondo', line=dict(color='#2ca02c')))
-    fig3.add_trace(go.Scatter(x=df["Anno"], y=df["Cumulato Mensile PAC"], name='Cumulato PAC', line=dict(color='#1f77b4')))
-    st.plotly_chart(fig3, use_container_width=True, key="grafico_linee")
+    st.plotly_chart(fig2, use_container_width=True, key="barre_mensili")
 
-st.info(f"**Risultato finale dopo {durata} anni:**")
-st.write(f"- Ricchezza Totale Fondo (Cash+Investimento): **€ {df.iloc[-1]['Ricchezza Fondo']:,.0f}**")
-st.write(f"- Ricchezza Totale PAC+TFR (Cash+Investimento): **€ {df.iloc[-1]['Ricchezza PAC+TFR']:,.0f}**")
+with col2:
+    st.subheader("📈 Liquidità Cumulata (In Banca)")
+    fig3 = go.Figure()
+    fig3.add_trace(go.Scatter(x=df["Anno"], y=df["Liquidità Fondo"], name='Cash Fondo', line=dict(color='#98df8a')))
+    fig3.add_trace(go.Scatter(x=df["Anno"], y=df["Liquidità PAC"], name='Cash PAC', line=dict(color='#aec7e8')))
+    st.plotly_chart(fig3, use_container_width=True, key="linee_cash")
+
+# --- 3. GRAFICO BASSO: RICCHEZZA TOTALE ---
+st.subheader("🚀 Ricchezza Totale (Capitale + Cash in Banca)")
+fig4 = go.Figure()
+fig4.add_trace(go.Scatter(x=df["Anno"], y=df["Ricchezza Totale Fondo"], name='Ricchezza Tot. Fondo', line=dict(color='#2ca02c', width=4, dash='dash')))
+fig4.add_trace(go.Scatter(x=df["Anno"], y=df["Ricchezza Totale PAC"], name='Ricchezza Tot. PAC', line=dict(color='#1f77b4', width=4, dash='dash')))
+st.plotly_chart(fig4, use_container_width=True, key="grafico_ricchezza_totale")
+
+st.success(f"**Risultato finale dopo {durata} anni:**")
+st.write(f"- Ricchezza Finale Fondo: **€ {df.iloc[-1]['Ricchezza Totale Fondo']:,.0f}**")
+st.write(f"- Ricchezza Finale PAC+TFR: **€ {df.iloc[-1]['Ricchezza Totale PAC']:,.0f}**")
+
+```
