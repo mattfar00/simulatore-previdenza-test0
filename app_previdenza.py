@@ -5,33 +5,42 @@ import plotly.graph_objects as go
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Simulatore R.I.T.A. Pro", layout="wide")
-st.title(" Confronto Previdenziale: Fondo vs PAC")
+st.title("🚀 Simulatore: Ricchezza Totale (Fondo vs PAC)")
 
 # --- SIDEBAR: FISCO E REDDITO ---
 st.sidebar.header("1. Parametri Fiscali e Reddito")
 ral = st.sidebar.number_input("RAL Lorda Annuale (€)", value=40000, step=1000)
 
+# Calcolo INPS (9.19%)
 inps_rate = 0.0919 
 inps_annuo = ral * inps_rate
+
+# Calcolo Addizionali (Regionale + Comunale media ~2%)
+addizionali_stimate = ral * 0.02 
+
 imponibile_irpef_lordo = ral - inps_annuo
 
-# Funzione precisa per calcolo IRPEF totale (Scaglioni 2026)
 def calcola_irpef_totale(imponibile):
     imponibile = max(0, imponibile)
     if imponibile <= 28000:
-        return imponibile * 0.23
+        tax = imponibile * 0.23
     elif imponibile <= 50000:
-        return (28000 * 0.23) + ((imponibile - 28000) * 0.33)
+        tax = (28000 * 0.23) + ((imponibile - 28000) * 0.33)
     else:
-        return (28000 * 0.23) + (22000 * 0.33) + ((imponibile - 50000) * 0.43)
+        tax = (28000 * 0.23) + (22000 * 0.33) + ((imponibile - 50000) * 0.43)
+    return tax
 
-# Calcolo per la UI (Netto mensile stima)
+# Calcolo IRPEF Netta con detrazioni lavoro dipendente (formula standard)
 irpef_annua = calcola_irpef_totale(imponibile_irpef_lordo)
+# Detrazione base ~1910€ + correzione su scaglioni
 detrazione = 1910 + (28000 - ral) * 0.05 if ral < 28000 else 1910
 irpef_netta = max(0, irpef_annua - detrazione)
-stipendio_netto_mensile = (ral - inps_annuo - irpef_netta) / 12
 
-st.sidebar.write(f"**Netto Mensile (Stima):** € {stipendio_netto_mensile:,.0f}")
+# Netto Annuo = RAL - INPS - IRPEF - ADDIZIONALI
+netto_annuo = ral - inps_annuo - irpef_netta - addizionali_stimate
+stipendio_netto_mensile = netto_annuo / 12
+
+st.sidebar.write(f"**Netto Mensile (Stima Realistica):** € {stipendio_netto_mensile:,.0f}")
 limite_deducibilita = 5300
 
 # --- INVESTIMENTI ---
@@ -55,15 +64,17 @@ tassa_tfr = st.sidebar.slider("Tassazione TFR (Separata) (%)", 23, 43, 30)
 st.sidebar.header("4. Orizzonte Temporale")
 durata = st.sidebar.slider("Anni di investimento", 1, 40, 20)
 
-# --- CALCOLO FISCALE PRECISO ---
-# Il risparmio fiscale è la differenza tra le tasse pagate con e senza deduzione
-quota_dedotta = min(versamento_fondo + contributo_azienda, limite_deducibilita)
-risparmio_fiscale_annuo = calcola_irpef_totale(imponibile_irpef_lordo) - calcola_irpef_totale(imponibile_irpef_lordo - quota_dedotta)
-
+# --- CALCOLO COSTI ---
+# Determinazione aliquota marginale per la deduzione
+aliquota_marginale = 23 if ral <= 28000 else (33 if ral <= 50000 else 43)
+risparmio_fiscale_annuo = min(versamento_fondo + contributo_azienda, limite_deducibilita) * (aliquota_marginale / 100)
 costo_reale_fondo_annuo = versamento_fondo - risparmio_fiscale_annuo
-disponibile_mensile_fondo = stipendio_netto_mensile - (costo_reale_fondo_annuo / 12)
-disponibile_mensile_pac = stipendio_netto_mensile - (versamento_pac / 12)
+costo_reale_pac_annuo = versamento_pac
 
+disponibile_mensile_fondo = stipendio_netto_mensile - (costo_reale_fondo_annuo / 12)
+disponibile_mensile_pac = stipendio_netto_mensile - (costo_reale_pac_annuo / 12)
+
+# --- MOTORE DI CALCOLO ---
 capitale_fondo = 0.0
 capitale_pac = 0.0
 capitale_tfr = 0.0
@@ -88,57 +99,50 @@ for anno in range(1, durata + 1):
     liquidita_cumulata_fondo += (disponibile_mensile_fondo * 12)
     liquidita_cumulata_pac += (disponibile_mensile_pac * 12)
     
-    # Netto Investimenti (già tassati)
-    inv_fondo_netto = (capitale_fondo * (1 - (tassa_uscita_fondo / 100))) + (risparmio_fiscale_annuo * anno)
-    plus_pac = max(0, capitale_pac - (versamento_pac * anno))
-    inv_pac_tfr_netto = (capitale_pac - (plus_pac * (tassa_uscita_pac / 100))) + (capitale_tfr * (1 - (tassa_tfr / 100)))
+    netto_fondo_finale = (capitale_fondo * (1 - (tassa_uscita_fondo / 100))) + (risparmio_fiscale_annuo * anno)
+    plusvalenza_pac = max(0, capitale_pac - (versamento_pac * anno))
+    netto_pac_finale = (capitale_pac - (plusvalenza_pac * (tassa_uscita_pac / 100))) + (capitale_tfr * (1 - (tassa_tfr / 100)))
     
     dati_grafico.append({
         "Anno": anno,
-        "Investimento Fondo Netto": inv_fondo_netto,
-        "Investimento PAC+TFR Netto": inv_pac_tfr_netto,
-        "Ricchezza Totale Fondo": liquidita_cumulata_fondo + inv_fondo_netto,
-        "Ricchezza Totale PAC": liquidita_cumulata_pac + inv_pac_tfr_netto,
-        "Liquidità Fondo": liquidita_cumulata_fondo,
-        "Liquidità PAC": liquidita_cumulata_pac,
+        "Ricchezza Fondo": liquidita_cumulata_fondo + netto_fondo_finale,
+        "Ricchezza PAC+TFR": liquidita_cumulata_pac + netto_pac_finale,
         "Netto Mensile Fondo": disponibile_mensile_fondo,
-        "Netto Mensile PAC": disponibile_mensile_pac
+        "Netto Mensile PAC": disponibile_mensile_pac,
+        "Capitale Fondo Netto": netto_fondo_finale,
+        "Capitale PAC+TFR Netto": netto_pac_finale
     })
 
 df = pd.DataFrame(dati_grafico)
 
-# --- 1. GRAFICO ALTO: CAPITALE INVESTITO ---
-st.subheader(" Confronto Capitale Investito (Netto Tasse)")
+# --- VISUALIZZAZIONE ---
+st.subheader("📊 Confronto Capitale Investito (Netto Tasse)")
 fig1 = go.Figure()
-fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Investimento Fondo Netto"], name='Capitale Fondo (+IRPEF)', line=dict(color='#2ca02c', width=4)))
-fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Investimento PAC+TFR Netto"], name='Capitale PAC + TFR', line=dict(color='#1f77b4', width=4)))
-fig1.update_layout(xaxis_title="Anni", yaxis_title="Euro (€)", hovermode="x unified")
-st.plotly_chart(fig1, use_container_width=True, key="grafico_investimento")
+fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Capitale Fondo Netto"], name='Capitale Fondo', line=dict(color='#2ca02c', width=4)))
+fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Capitale PAC+TFR Netto"], name='Capitale PAC+TFR', line=dict(color='#1f77b4', width=4)))
+st.plotly_chart(fig1, use_container_width=True)
 
-# --- 2. SEZIONE INTERMEDIA: DISPONIBILITÀ E LIQUIDITÀ ---
 col1, col2 = st.columns(2)
 with col1:
-    st.subheader(" Disponibilità Mensile Residua")
+    st.subheader("💰 Disponibilità Mensile")
     fig2 = go.Figure(data=[
-        go.Bar(name='Fondo Pensione', x=['Netto Mensile'], y=[df["Netto Mensile Fondo"].iloc[-1]], marker_color='#2ca02c'),
-        go.Bar(name='PAC Indipendente', x=['Netto Mensile'], y=[df["Netto Mensile PAC"].iloc[-1]], marker_color='#1f77b4')
+        go.Bar(name='Fondo Pensione', x=['Residuo'], y=[df["Netto Mensile Fondo"].iloc[-1]], marker_color='#2ca02c'),
+        go.Bar(name='PAC Indipendente', x=['Residuo'], y=[df["Netto Mensile PAC"].iloc[-1]], marker_color='#1f77b4')
     ])
-    st.plotly_chart(fig2, use_container_width=True, key="barre_mensili")
-
+    st.plotly_chart(fig2, use_container_width=True)
 with col2:
-    st.subheader("📈 Liquidità totale netta no spese (In Banca)")
+    st.subheader("📈 Liquidità Cumulata")
     fig3 = go.Figure()
-    fig3.add_trace(go.Scatter(x=df["Anno"], y=df["Liquidità Fondo"], name='Cash Fondo', line=dict(color='#98df8a')))
-    fig3.add_trace(go.Scatter(x=df["Anno"], y=df["Liquidità PAC"], name='Cash PAC', line=dict(color='#aec7e8')))
-    st.plotly_chart(fig3, use_container_width=True, key="linee_cash")
+    fig3.add_trace(go.Scatter(x=df["Anno"], y=liquidita_cumulata_fondo, name='Cash Fondo', line=dict(color='#98df8a')))
+    fig3.add_trace(go.Scatter(x=df["Anno"], y=liquidita_cumulata_pac, name='Cash PAC', line=dict(color='#aec7e8')))
+    st.plotly_chart(fig3, use_container_width=True)
 
-# --- 3. GRAFICO BASSO: RICCHEZZA TOTALE ---
-st.subheader(" Ricchezza Totale (Capitale + Cash flow stipendi netti)")
+st.subheader("🚀 Ricchezza Totale (Capitale + Cash)")
 fig4 = go.Figure()
-fig4.add_trace(go.Scatter(x=df["Anno"], y=df["Ricchezza Totale Fondo"], name='Ricchezza Tot. Fondo', line=dict(color='#2ca02c', width=4, dash='dash')))
-fig4.add_trace(go.Scatter(x=df["Anno"], y=df["Ricchezza Totale PAC"], name='Ricchezza Tot. PAC', line=dict(color='#1f77b4', width=4, dash='dash')))
-st.plotly_chart(fig4, use_container_width=True, key="grafico_ricchezza_totale")
+fig4.add_trace(go.Scatter(x=df["Anno"], y=df["Ricchezza Fondo"], name='Fondo (Totale)', line=dict(color='#2ca02c', width=4, dash='dash')))
+fig4.add_trace(go.Scatter(x=df["Anno"], y=df["Ricchezza PAC+TFR"], name='PAC+TFR (Totale)', line=dict(color='#1f77b4', width=4, dash='dash')))
+st.plotly_chart(fig4, use_container_width=True)
 
-st.success(f"**Risultato finale dopo {durata} anni:**")
-st.write(f"- Ricchezza Finale Fondo: **€ {df.iloc[-1]['Ricchezza Totale Fondo']:,.0f}**")
-st.write(f"- Ricchezza Finale PAC+TFR: **€ {df.iloc[-1]['Ricchezza Totale PAC']:,.0f}**")
+st.info(f"**Risultato finale dopo {durata} anni:**")
+st.write(f"- Ricchezza Totale Fondo (Cash+Investimento): **€ {df.iloc[-1]['Ricchezza Fondo']:,.0f}**")
+st.write(f"- Ricchezza Totale PAC+TFR (Cash+Investimento): **€ {df.iloc[-1]['Ricchezza PAC+TFR']:,.0f}**")
