@@ -89,14 +89,17 @@ for anno in range(1, durata + 1):
 df = pd.DataFrame(dati_grafico)
 
 # --- RISULTATI FINALI E GRAFICI ---
-final_fondo_netto = capitale_fondo * (1 - (tassa_uscita_fondo / 100))
+# Calcolo netto fondo + risparmio fiscale accumulato
+netto_fondo_dopo_tasse = capitale_fondo * (1 - (tassa_uscita_fondo / 100))
+final_fondo_totale = netto_fondo_dopo_tasse + risparmio_irpef_accumulato
+
 plusvalenza_pac = max(0, capitale_pac_volontario - totale_investito_pac)
 final_pac_netto = capitale_pac_volontario - (plusvalenza_pac * (tassa_uscita_pac / 100))
 
-st.subheader("🏁 Risultato Finale (Netto Tasse)")
+st.subheader("🏁 Risultato Finale (Netto Tasse + Beneficio Fiscale)")
 col_a, col_b = st.columns(2)
 with col_a:
-    st.info(f"**Netto Finale Fondo (Volontario + TFR + Az.):** € {final_fondo_netto:,.0f}")
+    st.info(f"**Netto Finale Fondo (Fondo + IRPEF Risparmiato):** € {final_fondo_totale:,.0f}")
 with col_b:
     st.info(f"**Netto Finale PAC (Solo Volontario):** € {final_pac_netto:,.0f}")
 
