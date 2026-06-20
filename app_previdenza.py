@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Simulatore R.I.T.A. Pro", layout="wide")
-st.title("🚀 Simulatore: Fondo Pensione vs PAC ")
+st.title(" Simulatore: Fondo Pensione vs PAC ")
 
 # --- SIDEBAR ---
 st.sidebar.header("1. Parametri Fiscali")
@@ -26,7 +26,7 @@ rend_pac = st.sidebar.slider("Rendimento Lordo PAC (%)", 1.0, 10.0, 7.0, 0.1) / 
 costo_perc_pac = st.sidebar.number_input("TER PAC (%)", value=0.20, step=0.01) / 100
 tassa_uscita_pac = st.sidebar.slider("Tassazione Plusvalenze PAC (%)", 0, 26, 26, help="Tassa sui guadagni realizzati")
 
-# NUOVO: Slider rendimento TFR separato
+# Rendimento TFR separato
 rend_tfr = st.sidebar.slider("Rendimento atteso TFR (se investito separatamente) (%)", 0.0, 7.0, 3.0, 0.1) / 100
 
 st.sidebar.header("4. Orizzonte Temporale")
@@ -90,16 +90,14 @@ with col_b:
 
 st.subheader("📊 Analisi Strategia Volontaria")
 fig1 = go.Figure()
-# Reintegrata la linea del Beneficio Totale (Fondo + IRPEF)
 fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Beneficio Totale (Fondo + IRPEF)"], name='Beneficio Totale (Fondo + IRPEF)', line=dict(color='#2ca02c', width=4, dash='dash')))
 fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Capitale Fondo"], name='Capitale Fondo (Nominale)', line=dict(color='#98df8a', width=2)))
 fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Capitale PAC Volontario"], name='PAC (Solo Volontario)', line=dict(color='#1f77b4', width=3)))
 fig1.update_layout(title="Fondo Pensione vs PAC (Sforzo Volontario)", xaxis_title="Anni", yaxis_title="Euro (€)")
-st.plotly_chart(fig1, use_container_width=True)
+st.plotly_chart(fig1, use_container_width=True, key="grafico_strategia_volontaria")
 
 st.subheader("📊 Analisi TFR (Investito separatamente)")
 fig2 = go.Figure()
 fig2.add_trace(go.Scatter(x=df["Anno"], y=df["Capitale TFR Investito"], name='TFR Investito', line=dict(color='#ff7f0e', width=3)))
 fig2.update_layout(title=f"Crescita del TFR (Rendimento {rend_tfr*100:.1f}%)", xaxis_title="Anni", yaxis_title="Euro (€)")
-st.plotly_chart(fig2, use_container_width=True)
-st.plotly_chart(fig2, use_container_width=True)
+st.plotly_chart(fig2, use_container_width=True, key="grafico_tfr")
