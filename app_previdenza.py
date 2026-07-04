@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Simulatore Previdenziale Pro", layout="wide")
-st.title("🚀 Confronto Previdenziale: Fondo vs PAC + TFR")
+st.title("Previdenza complementare")
 
 # --- SIDEBAR: FISCO E REDDITO ---
 st.sidebar.header("1. Parametri Fiscali")
@@ -111,7 +111,7 @@ for anno in range(1, durata + 1):
 df = pd.DataFrame(dati_grafico)
 
 # --- VISUALIZZAZIONE ---
-st.subheader("📊 Andamento Capitale Netto")
+st.subheader(" Andamento Capitale Netto")
 fig1 = go.Figure()
 fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Fondo Pensione Netto"], name='Fondo Pensione (Tutto dentro)', line=dict(color='#2ca02c', width=4)))
 
