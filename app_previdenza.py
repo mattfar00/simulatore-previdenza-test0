@@ -28,11 +28,12 @@ CCNL_PRESET = {
         "costo_iniziale": 5.16,
         "costo_fisso": 12.0,
         "mensilita": 13,
-        # Minimi tabellari mensili dal 1° giugno 2026 (Federmeccanica-Assistal)
+        # Minimi tabellari mensili dal 1° giugno 2026 (Federmeccanica-Assistal,
+        # verbale 16 giugno 2026). 13 mensilità. Valori ufficiali completi.
         "livelli": {
             "D1": 1784.94, "D2": 1979.37, "C1": 2022.12, "C2": 2064.88,
-            "C3": 2211.43, "B1": 2380.00, "B2": 2542.98, "B3": 2680.00,
-            "A1": 2907.00,
+            "C3": 2211.43, "B1": 2370.33, "B2": 2542.98, "B3": 2838.99,
+            "A1": 2907.01,
         },
         "scatto_valore": 30.0,   # €/mese medio per scatto
         "scatto_ogni_anni": 2,   # biennale
@@ -44,7 +45,7 @@ CCNL_PRESET = {
             "Azionario":   (0.0025, 0.045, 0.135, 0.20),
         },
     },
-    "Commercio (Fon.Te)": {
+    "Commercio Confcommercio (Fon.Te)": {
         "fondo": "Fon.Te",
         "contrib_lav_pct": 0.0055,       # min 0,55%
         "contrib_azienda_pct": 0.0155,   # 1,55%
@@ -53,14 +54,52 @@ CCNL_PRESET = {
         "costo_iniziale": 15.50,
         "costo_fisso": 22.0,
         "mensilita": 14,
-        # Minimi tabellari mensili (Confcommercio, tabelle da novembre 2025)
+        # Minimi tabellari mensili (paga base + contingenza) dal 1° novembre 2025
+        # Fonte: CCNL Terziario Confcommercio (rinnovo 22 marzo 2024).
+        # Copre la grande distribuzione / terziario, ~3 mln lavoratori.
         "livelli": {
-            "VII": 873.00, "VI": 1290.00, "V": 1480.00, "IV": 1572.00,
-            "III": 1700.00, "II": 1850.00, "I": 2000.00, "Quadro": 2183.00,
+            "Quadro": 2183.09, "I": 1966.54, "II": 1701.04, "III": 1453.94,
+            "IV": 1257.46, "V": 1136.07, "VI": 1019.94, "VII": 873.22,
         },
-        "scatto_valore": 22.0,   # €/mese medio per scatto
-        "scatto_ogni_anni": 3,   # triennale
+        # Scatti triennali, max 5. Importo per livello (€/mese)
+        "scatti_valore_livello": {
+            "Quadro": 30.0, "I": 27.0, "II": 25.0, "III": 22.0,
+            "IV": 20.0, "V": 18.0, "VI": 16.0, "VII": 15.0,
+        },
+        "scatto_valore": 20.0,
+        "scatto_ogni_anni": 3,
         "scatti_max": 5,
+        "comparti": {
+            "Garantito":   (0.0077, 0.010, 0.030, 0.70),
+            "Bilanciato":  (0.0036, 0.027, 0.070, 0.45),
+            "Azionario":   (0.0036, 0.045, 0.135, 0.20),
+        },
+    },
+    "Commercio Conflavoro PMI (Fon.Te)": {
+        "fondo": "Fon.Te",
+        "contrib_lav_pct": 0.0055,       # min 0,55%
+        "contrib_azienda_pct": 0.0155,   # 1,55%
+        "contrib_azienda_u35_pct": 0.0155,
+        "tfr_pct": 0.0691,
+        "costo_iniziale": 15.50,
+        "costo_fisso": 22.0,
+        "mensilita": 14,
+        # Minimi tabellari mensili (retribuzione base) in vigore dal 1° giugno 2026
+        # Fonte: CCNL Commercio Terziario Conflavoro PMI / Confsal / Fesica.
+        # Orientato alle piccole e medie imprese. (*) Quadri: incl. indennità
+        # di funzione 260,77 €.
+        "livelli": {
+            "Quadro": 2986.95, "I": 2507.20, "II": 2236.65, "III": 1985.15,
+            "IV": 1785.00, "V": 1662.00, "VI": 1543.05, "VII": 1399.35,
+        },
+        # Scatti triennali, max 10. Importo per livello (€/mese)
+        "scatti_valore_livello": {
+            "Quadro": 26.0, "I": 25.0, "II": 23.0, "III": 22.0,
+            "IV": 21.5, "V": 21.0, "VI": 20.5, "VII": 20.0,
+        },
+        "scatto_valore": 22.0,
+        "scatto_ogni_anni": 3,
+        "scatti_max": 10,
         "comparti": {
             "Garantito":   (0.0077, 0.010, 0.030, 0.70),
             "Bilanciato":  (0.0036, 0.027, 0.070, 0.45),
@@ -92,6 +131,11 @@ livello = st.sidebar.selectbox("Livello di inquadramento", list(preset["livelli"
 minimo_mensile = preset["livelli"][livello]
 minimo_annuo = minimo_mensile * mensilita
 
+# Importo scatto: per-livello se disponibile, altrimenti valore medio del preset
+scatto_valore_livello = preset.get("scatti_valore_livello", {}).get(
+    livello, preset["scatto_valore"]
+)
+
 st.sidebar.caption(
     f"Minimo tabellare **{livello}**: {minimo_mensile:,.0f} €/mese × {mensilita} "
     f"mensilità = **{minimo_annuo:,.0f} €/anno**"
@@ -102,7 +146,7 @@ anni_anzianita_pregressi = st.sidebar.number_input(
     "Scatti di anzianità già maturati", min_value=0, max_value=preset["scatti_max"],
     value=0, step=1,
     help=f"Max {preset['scatti_max']} scatti, uno ogni {preset['scatto_ogni_anni']} anni. "
-         f"Valore medio {preset['scatto_valore']:.0f} €/mese ciascuno",
+         f"Livello {livello}: {scatto_valore_livello:.1f} €/mese ciascuno",
 )
 superminimo_mensile = st.sidebar.number_input(
     "Superminimo (€/mese)", min_value=0, value=0, step=50,
@@ -113,6 +157,19 @@ premio_produzione_annuo = st.sidebar.number_input(
     "Premio di produzione (€/anno)", min_value=0, value=0, step=200,
     help="Premio di risultato variabile. NON entra nella base del contributo "
          "aziendale al fondo.",
+)
+
+st.sidebar.markdown("**Override manuale (opzionale)**")
+ral_manuale = st.sidebar.number_input(
+    "RAL effettiva a mano (€/anno, 0 = auto)", min_value=0, value=0, step=1000,
+    help="Se la conosci, inserisci la tua RAL reale. Sostituisce quella calcolata "
+         "e viene usata per TFR e IRPEF. Il contributo AZIENDA resta comunque "
+         "calcolato sui minimi tabellari + scatti (come da contratto).",
+)
+capitale_iniziale_fondo = st.sidebar.number_input(
+    "Capitale già presente nel fondo (€)", min_value=0, value=0, step=1000,
+    help="Montante già accumulato se sei iscritto da tempo. Cresce con i "
+         "rendimenti e viene tassato all'uscita in base agli anni di adesione.",
 )
 
 st.sidebar.header("2. Profilo Lavoratore")
@@ -371,11 +428,13 @@ def simula_capitale(fattori, rend_fondo_annui, params) -> pd.DataFrame:
     tt       = params["tt"] / 100
     anni_pregressi = params["anni_pregressi"]
     uscita_ord = params["uscita_ordinaria"]
+    cap_iniziale_fondo = params.get("cap_iniziale_fondo", 0.0)
 
     # Aliquota fondo sui rendimenti annuali (media pesata 20% / 12,5%)
     aliq_rend_fondo = 0.20 * (1 - quota_ts) + 0.125 * quota_ts
 
-    cap_fondo = cap_pac = cap_tfr = versato_pac_cum = 0.0
+    cap_fondo = float(cap_iniziale_fondo)   # montante di partenza già accumulato
+    cap_pac = cap_tfr = versato_pac_cum = 0.0
     risparmio_irpef_cum = 0.0
     rows = []
 
@@ -458,11 +517,16 @@ def simula_capitale(fattori, rend_fondo_annui, params) -> pd.DataFrame:
 #   base contributiva = minimi tabellari + scatti già maturati
 #   RAL totale         = base contributiva + superminimo + premio produzione
 scatti_valore_annuo = (
-    anni_anzianita_pregressi * preset["scatto_valore"] * mensilita
+    anni_anzianita_pregressi * scatto_valore_livello * mensilita
 )
 base_contrib_iniziale = minimo_annuo + scatti_valore_annuo
 superminimo_annuo = superminimo_mensile * mensilita
-ral = base_contrib_iniziale + superminimo_annuo + premio_produzione_annuo
+ral_auto = base_contrib_iniziale + superminimo_annuo + premio_produzione_annuo
+
+# Override manuale: se inserita, la RAL a mano sostituisce quella calcolata
+# (usata per TFR e IRPEF). Il contributo azienda resta sui minimi+scatti.
+ral_override = ral_manuale > 0
+ral = ral_manuale if ral_override else ral_auto
 
 coeff_totale = COEFF_LAVORATORE[tipo_lavoratore]
 scenari = genera_scenari(profilo_crescita, coeff_totale, crescita_base, n=1000)
@@ -481,6 +545,7 @@ params = dict(
     vp=versamento_pac, rend_pac_annui=rend_pac_sel, ter_p=ter_pac,
     tp=tassa_uscita_pac, rt=rend_tfr, tt=tassa_tfr,
     anni_pregressi=anni_gia_iscritto, uscita_ordinaria=uscita_ordinaria,
+    cap_iniziale_fondo=capitale_iniziale_fondo,
 )
 
 # Scenario di carriera mediano (P50) per la tabella principale
@@ -514,21 +579,36 @@ st.info(
 
 # --- Composizione della RAL iniziale ---
 st.subheader("🧱 Composizione della RAL (Anno 1)")
-rc1, rc2, rc3, rc4 = st.columns(4)
-rc1.metric("Minimo tabellare", f"€ {minimo_annuo:,.0f}",
-           help=f"Livello {livello}: {minimo_mensile:,.0f} €/mese × {mensilita} mensilità")
-rc2.metric("Scatti anzianità", f"€ {scatti_valore_annuo:,.0f}",
-           help=f"{anni_anzianita_pregressi} scatti × {preset['scatto_valore']:.0f} €/mese × {mensilita}")
-rc3.metric("Superminimo + premio", f"€ {superminimo_annuo + premio_produzione_annuo:,.0f}",
-           help="Voci individuali, non entrano nel calcolo del contributo azienda")
-rc4.metric("RAL totale", f"€ {ral:,.0f}")
+if ral_override:
+    rc1, rc2, rc3 = st.columns(3)
+    rc1.metric("RAL inserita a mano", f"€ {ral:,.0f}",
+               help="Override manuale attivo. Usata per TFR e IRPEF.")
+    rc2.metric("Base contributiva fondo", f"€ {base_contrib_iniziale:,.0f}",
+               help=f"Minimi {livello} + {anni_anzianita_pregressi} scatti. "
+                    f"Il contributo azienda si calcola su questa, non sulla RAL manuale.")
+    rc3.metric("RAL auto (confronto)", f"€ {ral_auto:,.0f}",
+               help="RAL che risulterebbe dai minimi + voci inserite")
+else:
+    rc1, rc2, rc3, rc4 = st.columns(4)
+    rc1.metric("Minimo tabellare", f"€ {minimo_annuo:,.0f}",
+               help=f"Livello {livello}: {minimo_mensile:,.0f} €/mese × {mensilita} mensilità")
+    rc2.metric("Scatti anzianità", f"€ {scatti_valore_annuo:,.0f}",
+               help=f"{anni_anzianita_pregressi} scatti × {scatto_valore_livello:.1f} €/mese × {mensilita}")
+    rc3.metric("Superminimo + premio", f"€ {superminimo_annuo + premio_produzione_annuo:,.0f}",
+               help="Voci individuali, non entrano nel calcolo del contributo azienda")
+    rc4.metric("RAL totale", f"€ {ral:,.0f}")
+
+cap_msg = ""
+if capitale_iniziale_fondo > 0:
+    cap_msg = (f" Nel fondo parti da un capitale già accumulato di "
+               f"**€ {capitale_iniziale_fondo:,.0f}**.")
 
 st.caption(
     f"Il contributo aziendale al fondo ({contrib_az_pct*100:.2f}%) e il tuo minimo "
     f"({preset['contrib_lav_pct']*100:.2f}%) si calcolano sulla **base contributiva** "
     f"di **€ {base_contrib_iniziale:,.0f}** (minimi tabellari + scatti), non sul "
-    f"superminimo né sul premio. Il TFR ({preset['tfr_pct']*100:.2f}%) invece è "
-    f"sull'intera retribuzione."
+    f"superminimo né sul premio. Il TFR ({preset['tfr_pct']*100:.2f}%) è sull'intera "
+    f"retribuzione" + (" (RAL inserita a mano)." if ral_override else ".") + cap_msg
 )
 st.divider()
 
