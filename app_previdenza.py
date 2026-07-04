@@ -1,15 +1,15 @@
-
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Simulatore Previdenziale Pro", layout="wide")
-st.title("Modi utilizzo previdenza complementare")
+st.title("Previdenze complementari")
 
 # --- SIDEBAR: FISCO E REDDITO ---
 st.sidebar.header("1. Parametri Fiscali")
 ral = st.sidebar.number_input("RAL Lorda Annuale (€)", value=40000, step=1000)
+mensilita = st.sidebar.selectbox("Mensilità stipendio (per calcolo costo mensile)", [12, 13, 14], index=0)
 
 inps_rate = 0.0919 
 inps_annuo = ral * inps_rate
@@ -25,7 +25,7 @@ def calcola_irpef_totale(imponibile):
         return (28000 * 0.23) + (22000 * 0.35) + ((imponibile - 50000) * 0.43)
 
 # Il limite di legge esatto per la deducibilità
-limite_deducibilita = 5300
+limite_deducibilita = 5164.57
 
 # --- INVESTIMENTI ---
 st.sidebar.header("2. Fondo Pensione")
@@ -41,7 +41,7 @@ st.sidebar.header("3. PAC Indipendente (ETF)")
 versamento_pac = st.sidebar.number_input("Versamento PAC Annuo (€)", min_value=0, value=3445, step=100)
 rend_pac = st.sidebar.slider("Rendimento Lordo PAC (%)", 1.0, 10.0, 7.0, 0.1) / 100
 costo_perc_pac = st.sidebar.number_input("TER PAC (%) - Gestione annua", value=0.20, step=0.01) / 100
-costo_fisso_pac = st.sidebar.number_input("Costo Fisso Annuo PAC (€)", value=0.0, step=1.0) # NUOVO CAMPO
+costo_fisso_pac = st.sidebar.number_input("Costo Fisso Annuo PAC (€)", value=0.0, step=1.0)
 tassa_uscita_pac = st.sidebar.slider("Tassazione Plusvalenze PAC (%)", 0, 26, 26)
 
 st.sidebar.header("4. TFR in Azienda")
@@ -53,6 +53,7 @@ durata = st.sidebar.slider("Anni di investimento", 1, 40, 20)
 unisci_pac_tfr = st.sidebar.checkbox("Unisci PAC e TFR in una singola linea", value=True)
 
 # --- CALCOLO FISCALE E FLUSSI DI CASSA ---
+# Il contributo azienda erode il plafond dei 5164,57€, ma NON genera rimborso IRPEF.
 spazio_deducibilita_residuo = max(0, limite_deducibilita - contributo_azienda)
 versamento_volontario_deducibile = min(versamento_fondo, spazio_deducibilita_residuo)
 
@@ -61,8 +62,9 @@ risparmio_fiscale_annuo = calcola_irpef_totale(imponibile_irpef_lordo) - calcola
 totale_imponibile_dedotto = versamento_volontario_deducibile * durata
 totale_risparmio_irpef = risparmio_fiscale_annuo * durata
 
-esborso_mensile_fondo = (versamento_fondo - risparmio_fiscale_annuo) / 12
-esborso_mensile_pac = versamento_pac / 12
+# Esborso mensile reale in base alle mensilità scelte
+esborso_mensile_fondo = (versamento_fondo - risparmio_fiscale_annuo) / mensilita
+esborso_mensile_pac = versamento_pac / mensilita
 
 # --- MOTORE DI CALCOLO ---
 capitale_fondo = 0.0
@@ -77,7 +79,7 @@ for anno in range(1, durata + 1):
     capitale_fondo += (capitale_fondo * rend_fondo) 
     capitale_fondo -= (capitale_fondo * costo_perc_fondo + costo_fisso_fondo)
     
-    # Simulazione PAC (con l'aggiunta del costo fisso annuo)
+    # Simulazione PAC
     capitale_pac += versamento_pac
     capitale_pac += (capitale_pac * rend_pac)
     capitale_pac -= (capitale_pac * (costo_perc_pac + imposta_bollo) + costo_fisso_pac)
@@ -89,18 +91,17 @@ for anno in range(1, durata + 1):
     # -------------------------------------------------------------
     # CALCOLO NETTI FINALI
     # -------------------------------------------------------------
-    # Fondo Pensione: Tassazione SOLO sul montante versato
+    # Fondo Pensione: la tassa di uscita si applica SOLO sul montante versato, non sugli interessi
     montante_versato_fondo = (versamento_fondo + tfr_annuo + contributo_azienda) * anno
     tassa_fondo = montante_versato_fondo * (tassa_uscita_fondo / 100)
     inv_fondo_netto = capitale_fondo - tassa_fondo
     
-    # PAC: Tassazione al 26% (o altro valore) SOLO sulla plusvalenza generata
+    # PAC: Tassazione solo sulla plusvalenza
     totale_versato_pac = versamento_pac * anno
     plusvalenza_pac = max(0, capitale_pac - totale_versato_pac)
-    tasse_plusvalenza_pac = plusvalenza_pac * (tassa_uscita_pac / 100)
-    inv_pac_netto = capitale_pac - tasse_plusvalenza_pac
+    inv_pac_netto = capitale_pac - (plusvalenza_pac * (tassa_uscita_pac / 100))
     
-    # TFR Azienda: Tassazione su tutto
+    # TFR Azienda: Tassazione su tutto l'importo all'uscita
     inv_tfr_netto = capitale_tfr * (1 - (tassa_tfr / 100))
     
     dati_grafico.append({
@@ -127,28 +128,43 @@ else:
 fig1.update_layout(hovermode="x unified", yaxis_tickformat="€,.0f")
 st.plotly_chart(fig1, use_container_width=True, key="grafico_linee")
 
-# --- RIASSUNTO FLUSSI E RISULTATI FINALI ---
+
+# --- SEZIONE COSTO MENSILE E RISULTATI ---
 st.markdown("---")
 
-col1, col2, col3 = st.columns(3)
+st.subheader(" Analisi del Costo Mensile Effettivo")
+st.write(f"Confronto di quanto esce **realmente** dalle tue tasche mese per mese, calcolato su **{mensilita} mensilità**.")
+
+col_a, col_b = st.columns(2)
+with col_a:
+    st.info(f"** Fondo Pensione**\n\n"
+            f"- Versamento lordo in busta paga: **€ {versamento_fondo/mensilita:,.0f}** / mese\n"
+            f"- Rimborso IRPEF stimato: **€ {risparmio_fiscale_annuo/mensilita:,.0f}** / mese\n"
+            f"---\n"
+            f"** costo netto reale: € {esborso_mensile_fondo:,.0f} / mese**")
+with col_b:
+    st.info(f"** PAC Indipendente**\n\n"
+            f"- Versamento richiesto: **€ {versamento_pac/mensilita:,.0f}** / mese\n"
+            f"- Rimborso fiscale: **€ 0** / mese\n"
+            f"---\n"
+            f"** costo: € {esborso_mensile_pac:,.0f} / mese**")
+
+st.markdown("---")
+
+col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader(" costo Mensile Reale")
-    st.write(f"Sforzo netto Fondo: **€ {esborso_mensile_fondo:,.0f} / mese**")
-    st.caption(f"*(Versi {versamento_fondo/12:,.0f}€ ma recuperi {(risparmio_fiscale_annuo/12):,.0f}€ di IRPEF)*")
-    st.write(f"Sforzo netto PAC: **€ {esborso_mensile_pac:,.0f} / mese**")
-
-with col2:
-    st.subheader(" Risparmio Fiscale")
+    st.subheader(" Risparmio Fiscale (Fondo Pensione)")
     st.write(f"Totale dedotto in {durata} anni: **€ {totale_imponibile_dedotto:,.0f}**")
     st.write(f"IRPEF non pagata (rimborsata): **€ {totale_risparmio_irpef:,.0f}**")
     st.caption("*(Questo vantaggio si applica solo al Fondo Pensione)*")
 
-with col3:
-    st.subheader(" Capitale Netto a Scadenza")
-    st.write(f" **Fondo Pensione:** € {df.iloc[-1]['Fondo Pensione Netto']:,.0f}")
+with col2:
+    st.subheader("🎯 Capitale Netto a Scadenza")
+    st.write(f"🟢 **Fondo Pensione:** € {df.iloc[-1]['Fondo Pensione Netto']:,.0f}")
     if unisci_pac_tfr:
-        st.write(f" **PAC + TFR in Azienda:** € {df.iloc[-1]['Strategia PAC + TFR']:,.0f}")
+        st.write(f"🔵 **PAC + TFR in Azienda:** € {df.iloc[-1]['Strategia PAC + TFR']:,.0f}")
     else:
-        st.write(f" **PAC Indipendente:** € {df.iloc[-1]['PAC Netto']:,.0f}")
+        st.write(f"🔵 **PAC Indipendente:** € {df.iloc[-1]['PAC Netto']:,.0f}")
+        st.write(f"🟠 **TFR in Azienda:** € {df.iloc[-1]['TFR in Azienda Netto']:,.0f}")
         st.write(f" **TFR in Azienda:** € {df.iloc[-1]['TFR in Azienda Netto']:,.0f}")
