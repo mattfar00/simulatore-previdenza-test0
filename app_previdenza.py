@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Simulatore Previdenziale Pro", layout="wide")
-st.title("Previdenza complementare")
+st.title(" Previdenza complementare")
 
 # --- SIDEBAR: FISCO E REDDITO ---
 st.sidebar.header("1. Parametri Fiscali")
@@ -25,7 +25,7 @@ def calcola_irpef_totale(imponibile):
         return (28000 * 0.23) + (22000 * 0.35) + ((imponibile - 50000) * 0.43)
 
 # Il limite di legge esatto per la deducibilità
-limite_deducibilita = 5164.57
+limite_deducibilita = 5300
 
 # --- INVESTIMENTI ---
 st.sidebar.header("2. Fondo Pensione")
@@ -69,6 +69,7 @@ esborso_mensile_pac = versamento_pac / mensilita
 capitale_fondo = 0.0
 capitale_pac = 0.0
 capitale_tfr = 0.0
+capitale_irpef_rimborsata = 0.0  # Variabile per tracciare gli interessi della quota IRPEF
 dati_grafico = []
 imposta_bollo = 0.002 
 
@@ -77,6 +78,11 @@ for anno in range(1, durata + 1):
     capitale_fondo += (versamento_fondo + tfr_annuo + contributo_azienda)
     capitale_fondo += (capitale_fondo * rend_fondo) 
     capitale_fondo -= (capitale_fondo * costo_perc_fondo + costo_fisso_fondo)
+    
+    # Simulazione Interessi generati ESCLUSIVAMENTE dai soldi dell'IRPEF rimborsata
+    capitale_irpef_rimborsata += risparmio_fiscale_annuo
+    capitale_irpef_rimborsata += (capitale_irpef_rimborsata * rend_fondo)
+    capitale_irpef_rimborsata -= (capitale_irpef_rimborsata * costo_perc_fondo)
     
     # Simulazione PAC
     capitale_pac += versamento_pac
@@ -109,6 +115,9 @@ for anno in range(1, durata + 1):
     })
 
 df = pd.DataFrame(dati_grafico)
+
+# Calcolo interessi puri generati dall'IRPEF
+interessi_su_irpef = capitale_irpef_rimborsata - totale_risparmio_irpef
 
 # --- VISUALIZZAZIONE ---
 st.subheader(" Andamento Capitale Netto")
@@ -148,24 +157,19 @@ st.markdown("---")
 
 col1, col2 = st.columns(2)
 
-# --- NUOVA SEZIONE: ARBITRAGGIO FISCALE ---
+# --- NUOVA SEZIONE: IL SUPERPOTERE FISCALE (Interessi sull'IRPEF) ---
 with col1:
-    st.subheader("⚖️ L'Arbitraggio Fiscale (Il guadagno sulle tasse)")
+    st.subheader("⚖️ Il Superpotere Fiscale (Arbitraggio + Interessi)")
     
-    # Calcoliamo le tasse in uscita che si applicheranno specificamente 
-    # SOLO alla somma dei versamenti volontari dedotti negli anni.
     tassa_su_volontari_dedotti = totale_imponibile_dedotto * (tassa_uscita_fondo / 100)
+    guadagno_netto_totale = totale_risparmio_irpef + interessi_su_irpef - tassa_su_volontari_dedotti
     
-    # Il guadagno netto è la differenza tra i soldi che lo Stato ti ha restituito 
-    # e le tasse che gli dovrai ridare alla fine su quegli stessi versamenti.
-    guadagno_netto_irpef = totale_risparmio_irpef - tassa_su_volontari_dedotti
-    
-    st.write(f"- IRPEF rimborsata negli anni: **+ € {totale_risparmio_irpef:,.0f}**")
-    st.write(f"- Tassa da restituire all'uscita: **- € {tassa_su_volontari_dedotti:,.0f}**")
-    st.write(f"*(Applicata solo sui versamenti dedotti: € {totale_imponibile_dedotto:,.0f})*")
+    st.write(f"- IRPEF che lo Stato ti ha rimborsato negli anni: **+ € {totale_risparmio_irpef:,.0f}**")
+    st.write(f"- Interessi generati da questa IRPEF nel fondo: **+ € {interessi_su_irpef:,.0f}**")
+    st.write(f"- Tassa da pagare all'uscita sui versamenti dedotti: **- € {tassa_su_volontari_dedotti:,.0f}**")
     st.markdown("---")
-    st.success(f"**🔥 Guadagno Netto Generato: € {guadagno_netto_irpef:,.0f}**")
-    st.caption("Questo è il vero guadagno in tasca generato unicamente dal gap tra l'aliquota IRPEF di oggi e l'imposta agevolata di domani, senza contare gli interessi del mercato.")
+    st.success(f"** Guadagno Fiscale Netto: € {guadagno_netto_totale:,.0f}**")
+    st.caption("Questo è il vero valore generato dai soldi 'dello Stato'. Non solo ti rimborsano le tasse subito, ma quei soldi maturano interessi per anni prima che tu debba restituirne una piccola parte (15-9%).")
 
 with col2:
     st.subheader(" Capitale Netto a Scadenza")
