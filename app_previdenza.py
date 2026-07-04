@@ -15,7 +15,7 @@ ral = st.sidebar.number_input("RAL Lorda Annuale Partenza (€)", value=40000, s
 mensilita = st.sidebar.selectbox("Mensilità (per calcolo costo mensile)", [12, 13, 14], index=0)
 profilo_crescita = st.sidebar.selectbox(
     "Profilo di crescita",
-    ["Moderata (1–4%/scatto)", "Media (2–5%/scatto)", "Spinta (4–7%/scatto)"],
+    ["Moderata (2–5%/scatto)", "Media (3–7%/scatto)", "Spinta (6–10%/scatto)"],
     index=1,
 )
 modalita = st.sidebar.radio("Modalità scenario", ["Mediana P50 (1000 simulazioni)", "Scenario casuale"])
@@ -65,11 +65,8 @@ def calcola_irpef(imponibile: float) -> float:
         return 28_000 * 0.23 + 22_000 * 0.35 + (imponibile - 50_000) * 0.43
 
 def risparmio_irpef_fondo(ral_lorda: float, vers_volontario: float) -> float:
-    """Risparmio IRPEF grazie alla deducibilità del versamento al fondo."""
     deducibile = min(vers_volontario, LIMITE_DEDUCIBILITA)
-    irpef_senza = calcola_irpef(ral_lorda)
-    irpef_con   = calcola_irpef(ral_lorda - deducibile)
-    return irpef_senza - irpef_con
+    return calcola_irpef(ral_lorda) - calcola_irpef(ral_lorda - deducibile)
 
 
 # ---------------------------------------------------------------------------
@@ -79,28 +76,18 @@ def risparmio_irpef_fondo(ral_lorda: float, vers_volontario: float) -> float:
 def genera_scenari(profilo: str, n: int = 1000, seed: int = 42) -> list[list[float]]:
     """
     Genera n percorsi di carriera realistici (40 anni ciascuno).
-
-    Logica degli scatti:
-    - I salti salariali sono più frequenti e corposi nei primi anni (<= 10),
-      poi diventano progressivamente più rari e contenuti.
-    - Fase 0–10 anni: scatti ogni 1–3 anni, ampiezza al massimo del range.
-    - Fase 11–20 anni: scatti ogni 2–4 anni, ampiezza ridotta al 70% del range.
-    - Fase 21+ anni: scatti ogni 3–5 anni, ampiezza ridotta al 40% del range.
-      (a meno di cambio lavoro simulato: ~12% di probabilità/anno di un salto extra).
-    - Nessuna crescita organica annua aggiuntiva: la RAL rimane piatta tra uno
-      scatto e l'altro, come nella realtà aziendale italiana.
-
-    Range degli scatti per profilo:
-      Moderata : 1–4%
-      Media    : 2–5%
-      Spinta   : 4–7%
+    - Anni 1-10:  scatti ogni 1-3 anni, ampiezza piena
+    - Anni 11-20: scatti ogni 2-4 anni, ampiezza 80%
+    - Anni 21+:   scatti ogni 3-5 anni, ampiezza 65%
+    - 12% prob/anno di cambio lavoro (salto extra, dopo anno 5)
+    - Nessuna crescita organica tra uno scatto e l'altro
     """
     rng = np.random.default_rng(seed)
 
     range_profilo = {
-        "Moderata": (0.01, 0.04),
-        "Media":    (0.02, 0.05),
-        "Spinta":   (0.04, 0.07),
+        "Moderata": (0.02, 0.05),
+        "Media":    (0.03, 0.07),
+        "Spinta":   (0.06, 0.10),
     }
     profilo_key = profilo.split(" ")[0]
     r_min, r_max = range_profilo[profilo_key]
@@ -120,11 +107,11 @@ def genera_scenari(profilo: str, n: int = 1000, seed: int = 42) -> list[list[flo
                 min_target = 1
                 max_target = 3
             elif anno <= 20:
-                fase_molt  = 0.70
+                fase_molt  = 0.80
                 min_target = 2
                 max_target = 4
             else:
-                fase_molt  = 0.40
+                fase_molt  = 0.65
                 min_target = 3
                 max_target = 5
 
@@ -153,17 +140,11 @@ def percentile_per_anno(matrix: list[list[float]], durata: int, p: float) -> lis
 
 def simula_capitale(fattori: list[float], params: dict) -> pd.DataFrame:
     ral_base = params["ral"]
-    vf0  = params["vf"]
-    tf0  = params["tf"]
-    ca0  = params["ca"]
-    vp0  = params["vp"]
-    rf   = params["rf"]
-    rp   = params["rp"]
-    tf2  = params["tf2"] / 100
-    tp   = params["tp"] / 100
-    rt   = params["rt"]
-    tt   = params["tt"] / 100
-    ter  = 0.002
+    vf0, tf0, ca0, vp0 = params["vf"], params["tf"], params["ca"], params["vp"]
+    rf, rp = params["rf"], params["rp"]
+    tf2, tp = params["tf2"] / 100, params["tp"] / 100
+    rt, tt = params["rt"], params["tt"] / 100
+    ter = 0.002
 
     cap_fondo = cap_pac = cap_tfr = versato_pac_cum = 0.0
     rows = []
@@ -171,26 +152,18 @@ def simula_capitale(fattori: list[float], params: dict) -> pd.DataFrame:
     for a, f in enumerate(fattori):
         anno     = a + 1
         ral_curr = ral_base * f
+        vf_curr, tf_curr, ca_curr, vp_curr = vf0*f, tf0*f, ca0*f, vp0*f
 
-        vf_curr = vf0 * f
-        tf_curr = tf0 * f
-        ca_curr = ca0 * f
-        vp_curr = vp0 * f
-
-        # Fondo pensione
         cap_fondo += vf_curr + tf_curr + ca_curr
         cap_fondo *= (1 + rf) * (1 - ter)
 
-        # PAC ETF
         versato_pac_cum += vp_curr
         cap_pac += vp_curr
         cap_pac *= (1 + rp) * (1 - ter)
 
-        # TFR in azienda
         cap_tfr += tf_curr
         cap_tfr *= (1 + rt)
 
-        # Netti a uscita
         plusval_pac     = max(0.0, cap_pac - versato_pac_cum)
         netto_fondo     = cap_fondo * (1 - tf2)
         netto_pac       = cap_pac - plusval_pac * tp
@@ -216,20 +189,16 @@ def simula_capitale(fattori: list[float], params: dict) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # CALCOLO COSTO MENSILE NETTO
 # ---------------------------------------------------------------------------
-def calcola_costo_mensile(ral: float, vers_vol: float, vers_pac: float, mensilita: int) -> dict:
-    risparmio = risparmio_irpef_fondo(ral, vers_vol)
+def calcola_costo_mensile(ral, vers_vol, vers_pac, mensilita):
+    risparmio               = risparmio_irpef_fondo(ral, vers_vol)
     costo_annuo_fondo_netto = max(0.0, vers_vol - risparmio)
-    costo_mensile_fondo     = costo_annuo_fondo_netto / mensilita
-    costo_mensile_pac       = vers_pac / mensilita
-    costo_mensile_tot       = costo_mensile_fondo + costo_mensile_pac
-
     return {
         "vers_vol":                vers_vol,
         "risparmio_irpef":         risparmio,
         "costo_annuo_fondo_netto": costo_annuo_fondo_netto,
-        "costo_mensile_fondo":     costo_mensile_fondo,
-        "costo_mensile_pac":       costo_mensile_pac,
-        "costo_mensile_tot":       costo_mensile_tot,
+        "costo_mensile_fondo":     costo_annuo_fondo_netto / mensilita,
+        "costo_mensile_pac":       vers_pac / mensilita,
+        "costo_mensile_tot":       costo_annuo_fondo_netto / mensilita + vers_pac / mensilita,
         "aliquota_marginale":      (calcola_irpef(ral) - calcola_irpef(ral - 1)) * 100,
     }
 
@@ -246,7 +215,7 @@ params = dict(
     rt=rend_tfr, tt=tassa_tfr,
 )
 
-mat_ral   = [[s[a] for a in range(durata)] for s in scenari]
+mat_ral = [[s[a] for a in range(durata)] for s in scenari]
 mat_fondo, mat_pac, mat_comb = [], [], []
 for s in scenari:
     df_s = simula_capitale(s[:durata], params)
@@ -256,10 +225,10 @@ for s in scenari:
 
 def pct(mat, p): return percentile_per_anno(mat, durata, p)
 
-p25_ral, p50_ral, p75_ral       = pct(mat_ral, 25),   pct(mat_ral, 50),   pct(mat_ral, 75)
+p25_ral,   p50_ral,   p75_ral   = pct(mat_ral, 25),   pct(mat_ral, 50),   pct(mat_ral, 75)
 p25_fondo, p50_fondo, p75_fondo = pct(mat_fondo, 25), pct(mat_fondo, 50), pct(mat_fondo, 75)
-p25_pac, p50_pac, p75_pac       = pct(mat_pac, 25),   pct(mat_pac, 50),   pct(mat_pac, 75)
-p25_comb, p50_comb, p75_comb    = pct(mat_comb, 25),  pct(mat_comb, 50),  pct(mat_comb, 75)
+p25_pac,   p50_pac,   p75_pac   = pct(mat_pac, 25),   pct(mat_pac, 50),   pct(mat_pac, 75)
+p25_comb,  p50_comb,  p75_comb  = pct(mat_comb, 25),  pct(mat_comb, 50),  pct(mat_comb, 75)
 
 anni = list(range(1, durata + 1))
 
@@ -288,24 +257,14 @@ c1.metric(
         f"Netto annuo: {info['costo_annuo_fondo_netto']:,.0f} €"
     ),
 )
-c2.metric(
-    "Costo PAC/mese",
-    f"€ {info['costo_mensile_pac']:,.0f}",
-    help="Nessuna deducibilità — costo pieno",
-)
-c3.metric(
-    "Totale investito/mese",
-    f"€ {info['costo_mensile_tot']:,.0f}",
-)
-c4.metric(
-    "Risparmio IRPEF annuo (fondo)",
-    f"€ {info['risparmio_irpef']:,.0f}",
-    help=f"Aliquota marginale stimata: {info['aliquota_marginale']:.0f}%",
-)
+c2.metric("Costo PAC/mese", f"€ {info['costo_mensile_pac']:,.0f}",
+          help="Nessuna deducibilità — costo pieno")
+c3.metric("Totale investito/mese", f"€ {info['costo_mensile_tot']:,.0f}")
+c4.metric("Risparmio IRPEF annuo (fondo)", f"€ {info['risparmio_irpef']:,.0f}",
+          help=f"Aliquota marginale stimata: {info['aliquota_marginale']:.0f}%")
 
 with st.expander("ℹ️ Come si calcola il costo netto del fondo"):
-    st.markdown(
-        f"""
+    st.markdown(f"""
 Il versamento volontario al fondo pensione è **deducibile dal reddito imponibile**
 fino a **€ {LIMITE_DEDUCIBILITA:,.2f}/anno** (art. 8 D.Lgs. 252/2005).
 
@@ -314,8 +273,7 @@ Con una RAL di **€ {ral:,.0f}**, la tua aliquota marginale IRPEF è circa
 risparmi **€ {info['risparmio_irpef']:,.0f} di IRPEF**, quindi il costo effettivo
 annuo del fondo è solo **€ {info['costo_annuo_fondo_netto']:,.0f}**
 ({info['costo_mensile_fondo']:,.0f} €/mese su {mensilita} mensilità).
-        """
-    )
+    """)
 
 st.divider()
 
@@ -329,27 +287,15 @@ st.caption("Banda colorata = range P25–P75 delle 1000 simulazioni di carriera.
 last = df_main.iloc[-1]
 cols = st.columns(4 if usa_entrambi else 3)
 
-cols[0].metric(
-    "Fondo Pensione Netto",
-    f"€ {last['Fondo Pensione Netto (€)']:,.0f}",
-    help=f"P25: {p25_fondo[-1]:,.0f} € — P75: {p75_fondo[-1]:,.0f} €",
-)
-cols[1].metric(
-    "PAC + TFR Netto",
-    f"€ {last['PAC + TFR Netto (€)']:,.0f}",
-    help=f"P25: {p25_pac[-1]:,.0f} € — P75: {p75_pac[-1]:,.0f} €",
-)
-cols[2].metric(
-    "RAL Finale Stimata",
-    f"€ {last['RAL (€)']:,.0f}",
-    help=f"P25: {ral * p25_ral[-1]:,.0f} € — P75: {ral * p75_ral[-1]:,.0f} €",
-)
+cols[0].metric("Fondo Pensione Netto", f"€ {last['Fondo Pensione Netto (€)']:,.0f}",
+               help=f"P25: {p25_fondo[-1]:,.0f} € — P75: {p75_fondo[-1]:,.0f} €")
+cols[1].metric("PAC + TFR Netto", f"€ {last['PAC + TFR Netto (€)']:,.0f}",
+               help=f"P25: {p25_pac[-1]:,.0f} € — P75: {p75_pac[-1]:,.0f} €")
+cols[2].metric("RAL Finale Stimata", f"€ {last['RAL (€)']:,.0f}",
+               help=f"P25: {ral * p25_ral[-1]:,.0f} € — P75: {ral * p75_ral[-1]:,.0f} €")
 if usa_entrambi:
-    cols[3].metric(
-        "Fondo + PAC (senza TFR)",
-        f"€ {last['Fondo + PAC Netto (€)']:,.0f}",
-        help=f"P25: {p25_comb[-1]:,.0f} € — P75: {p75_comb[-1]:,.0f} €",
-    )
+    cols[3].metric("Fondo + PAC (senza TFR)", f"€ {last['Fondo + PAC Netto (€)']:,.0f}",
+                   help=f"P25: {p25_comb[-1]:,.0f} € — P75: {p75_comb[-1]:,.0f} €")
 
 
 # ---------------------------------------------------------------------------
@@ -361,14 +307,12 @@ def banda(x, y_hi, y_lo, color, name):
     fig.add_trace(go.Scatter(
         x=x + x[::-1], y=y_hi + y_lo[::-1],
         fill="toself", fillcolor=color,
-        line=dict(color="rgba(0,0,0,0)"),
-        name=name, showlegend=True,
+        line=dict(color="rgba(0,0,0,0)"), name=name, showlegend=True,
     ))
 
 def linea(x, y, color, name, dash="solid"):
     fig.add_trace(go.Scatter(
-        x=x, y=y, name=name,
-        line=dict(color=color, width=3, dash=dash),
+        x=x, y=y, name=name, line=dict(color=color, width=3, dash=dash),
     ))
 
 banda(anni, p75_fondo, p25_fondo, "rgba(42,120,214,0.12)", "Fondo P25–P75")
@@ -382,10 +326,8 @@ if usa_entrambi:
     linea(anni, df_main["Fondo + PAC Netto (€)"], "#eda100", "Fondo + PAC (senza TFR)", dash="dot")
 
 fig.update_layout(
-    xaxis_title="Anno",
-    yaxis_title="Capitale Netto (€)",
-    yaxis_tickformat="€,.0f",
-    hovermode="x unified",
+    xaxis_title="Anno", yaxis_title="Capitale Netto (€)",
+    yaxis_tickformat="€,.0f", hovermode="x unified",
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     height=430,
 )
