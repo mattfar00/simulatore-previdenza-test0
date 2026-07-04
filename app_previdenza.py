@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Simulatore Previdenziale Pro", layout="wide")
-st.title(" Previdenza complementare")
+st.title("🚀 Confronto Previdenziale: Fondo vs PAC + TFR")
 
 # --- SIDEBAR: FISCO E REDDITO ---
 st.sidebar.header("1. Parametri Fiscali")
@@ -25,7 +25,7 @@ def calcola_irpef_totale(imponibile):
         return (28000 * 0.23) + (22000 * 0.35) + ((imponibile - 50000) * 0.43)
 
 # Il limite di legge esatto per la deducibilità
-limite_deducibilita = 5300
+limite_deducibilita = 5164.57
 
 # --- INVESTIMENTI ---
 st.sidebar.header("2. Fondo Pensione")
@@ -69,7 +69,6 @@ esborso_mensile_pac = versamento_pac / mensilita
 capitale_fondo = 0.0
 capitale_pac = 0.0
 capitale_tfr = 0.0
-capitale_irpef_rimborsata = 0.0  # Variabile per tracciare gli interessi della quota IRPEF
 dati_grafico = []
 imposta_bollo = 0.002 
 
@@ -78,11 +77,6 @@ for anno in range(1, durata + 1):
     capitale_fondo += (versamento_fondo + tfr_annuo + contributo_azienda)
     capitale_fondo += (capitale_fondo * rend_fondo) 
     capitale_fondo -= (capitale_fondo * costo_perc_fondo + costo_fisso_fondo)
-    
-    # Simulazione Interessi generati ESCLUSIVAMENTE dai soldi dell'IRPEF rimborsata
-    capitale_irpef_rimborsata += risparmio_fiscale_annuo
-    capitale_irpef_rimborsata += (capitale_irpef_rimborsata * rend_fondo)
-    capitale_irpef_rimborsata -= (capitale_irpef_rimborsata * costo_perc_fondo)
     
     # Simulazione PAC
     capitale_pac += versamento_pac
@@ -96,6 +90,7 @@ for anno in range(1, durata + 1):
     # -------------------------------------------------------------
     # CALCOLO NETTI FINALI
     # -------------------------------------------------------------
+    # Fondo: tassa di uscita applicata su tutto il versato (Volontario + TFR + Azienda)
     montante_versato_fondo = (versamento_fondo + tfr_annuo + contributo_azienda) * anno
     tassa_fondo = montante_versato_fondo * (tassa_uscita_fondo / 100)
     inv_fondo_netto = capitale_fondo - tassa_fondo
@@ -116,11 +111,8 @@ for anno in range(1, durata + 1):
 
 df = pd.DataFrame(dati_grafico)
 
-# Calcolo interessi puri generati dall'IRPEF
-interessi_su_irpef = capitale_irpef_rimborsata - totale_risparmio_irpef
-
 # --- VISUALIZZAZIONE ---
-st.subheader(" Andamento Capitale Netto")
+st.subheader("📊 Andamento Capitale Netto")
 fig1 = go.Figure()
 fig1.add_trace(go.Scatter(x=df["Anno"], y=df["Fondo Pensione Netto"], name='Fondo Pensione (Tutto dentro)', line=dict(color='#2ca02c', width=4)))
 
@@ -136,7 +128,7 @@ st.plotly_chart(fig1, use_container_width=True, key="grafico_linee")
 # --- SEZIONE COSTO MENSILE E RISULTATI ---
 st.markdown("---")
 
-st.subheader(" Analisi del Costo Mensile Effettivo")
+st.subheader("💸 Analisi del Costo Mensile Effettivo")
 st.write(f"Confronto di quanto esce **realmente** dalle tue tasche mese per mese, calcolato su **{mensilita} mensilità**.")
 
 col_a, col_b = st.columns(2)
@@ -145,34 +137,43 @@ with col_a:
             f"- Versamento lordo in busta paga: **€ {versamento_fondo/mensilita:,.0f}** / mese\n"
             f"- Rimborso IRPEF stimato: **€ {risparmio_fiscale_annuo/mensilita:,.0f}** / mese\n"
             f"---\n"
-            f"**Costo fondo: € {esborso_mensile_fondo:,.0f} / mese**")
+            f"**👉 Sforzo netto reale: € {esborso_mensile_fondo:,.0f} / mese**")
 with col_b:
     st.info(f"**🔵 PAC Indipendente**\n\n"
             f"- Versamento richiesto: **€ {versamento_pac/mensilita:,.0f}** / mese\n"
             f"- Rimborso fiscale: **€ 0** / mese\n"
             f"---\n"
-            f"**Costo Pac: € {esborso_mensile_pac:,.0f} / mese**")
+            f"**👉 Sforzo netto reale: € {esborso_mensile_pac:,.0f} / mese**")
 
 st.markdown("---")
 
 col1, col2 = st.columns(2)
 
-# --- NUOVA SEZIONE: IL SUPERPOTERE FISCALE (Interessi sull'IRPEF) ---
+# --- NUOVA SEZIONE: IL SUPERPOTERE DEL FONDO ---
 with col1:
-    st.subheader("⚖️ Il Superpotere Fiscale (Arbitraggio + Interessi)")
+    st.subheader("⚖️ Il Superpotere del Fondo (Fisco + Interessi)")
     
-    tassa_su_volontari_dedotti = totale_imponibile_dedotto * (tassa_uscita_fondo / 100)
-    guadagno_netto_totale = totale_risparmio_irpef + interessi_su_irpef - tassa_su_volontari_dedotti
+    # Totale versato da tutte e tre le fonti in tutti gli anni
+    totale_versato_globale = (versamento_fondo + contributo_azienda + tfr_annuo) * durata
+    
+    # Tassa calcolata sull'intero montante dei versamenti
+    tassa_totale_uscita = totale_versato_globale * (tassa_uscita_fondo / 100)
+    
+    # Interessi totali netti generati su tutto il capitale investito (Fondo - Versamenti)
+    interessi_totali_fondo = capitale_fondo - totale_versato_globale
+    
+    # Bilancio complessivo
+    guadagno_netto_totale = totale_risparmio_irpef + interessi_totali_fondo - tassa_totale_uscita
     
     st.write(f"- IRPEF che lo Stato ti ha rimborsato negli anni: **+ € {totale_risparmio_irpef:,.0f}**")
-    st.write(f"- Interessi generati da questa IRPEF nel fondo: **+ € {interessi_su_irpef:,.0f}**")
-    st.write(f"- Tassa da pagare all'uscita sui versamenti dedotti: **- € {tassa_su_volontari_dedotti:,.0f}**")
+    st.write(f"- Interessi totali generati (su Volont. + Datore + TFR): **+ € {interessi_totali_fondo:,.0f}**")
+    st.write(f"- Tassa totale all'uscita (su Volont. + Datore + TFR): **- € {tassa_totale_uscita:,.0f}**")
     st.markdown("---")
-    st.success(f"** Guadagno Fiscale Netto: € {guadagno_netto_totale:,.0f}**")
-    st.caption("Questo è il vero valore generato dai soldi 'dello Stato'. Non solo ti rimborsano le tasse subito, ma quei soldi maturano interessi per anni prima che tu debba restituirne una piccola parte (15-9%).")
+    st.success(f"**🔥 Valore Netto Aggiunto: € {guadagno_netto_totale:,.0f}**")
+    st.caption("Nota matematica: Questo bilancio mette a confronto la tassa finale su TUTTO il capitale (TFR incluso) contro i soli interessi generati e il rimborso IRPEF volontario. Da questo bilancio è escluso, per prudenza, il gigantesco risparmio fiscale sul TFR rispetto all'azienda!")
 
 with col2:
-    st.subheader(" Capitale Netto a Scadenza")
+    st.subheader("🎯 Capitale Netto a Scadenza")
     st.write(f"🟢 **Fondo Pensione:** € {df.iloc[-1]['Fondo Pensione Netto']:,.0f}")
     if unisci_pac_tfr:
         st.write(f"🔵 **PAC + TFR in Azienda:** € {df.iloc[-1]['Strategia PAC + TFR']:,.0f}")
