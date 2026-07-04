@@ -72,6 +72,11 @@ profilo_crescita = st.sidebar.selectbox(
     ["Moderata (2–5%/scatto)", "Media (3–7%/scatto)", "Spinta (6–10%/scatto)"],
     index=1,
 )
+crescita_base = st.sidebar.slider(
+    "Crescita di base annua (inflazione + rinnovi CCNL) %", 0.0, 4.0, 2.0, 0.1,
+    help="Adeguamento applicato ogni anno anche senza promozioni. In Italia "
+         "l'inflazione media di lungo periodo + rinnovi contrattuali vale ~1,5–2,5%.",
+) / 100
 
 st.sidebar.header("2. Contratto e Fondo")
 ccnl_scelto = st.sidebar.selectbox("CCNL / Fondo negoziale", list(CCNL_PRESET.keys()), index=0)
@@ -196,10 +201,15 @@ def aliquota_uscita_fondo(anni_adesione_totali: int, ordinaria: bool = False) ->
 # GENERAZIONE 1000 SIMULAZIONI DI CARRIERA
 # ---------------------------------------------------------------------------
 @st.cache_data
-def genera_scenari(profilo: str, coeff: float, n: int = 1000, seed: int = 42):
+def genera_scenari(profilo: str, coeff: float, crescita_base: float,
+                   n: int = 1000, seed: int = 42):
     """
-    1000 percorsi di carriera (40 anni). Crescita FORTEMENTE concentrata nei
-    primi 6-10 anni (junior->senior), poi appiattimento. Fonte: ISTAT.
+    1000 percorsi di carriera (40 anni). Due componenti:
+    1. SCATTI DI CARRIERA: promozioni/avanzamenti, concentrati nei primi 6-10
+       anni (junior->senior) e poi radi. Fonte forma curva: ISTAT.
+    2. CRESCITA DI BASE annua: adeguamento all'inflazione e rinnovi contrattuali
+       CCNL, applicata OGNI anno anche in assenza di scatti (tipicamente 1,5-2,5%).
+       Evita che la RAL resti nominalmente piatta tra uno scatto e l'altro.
     """
     rng = np.random.default_rng(seed)
     range_profilo = {"Moderata": (0.02, 0.05), "Media": (0.03, 0.07), "Spinta": (0.06, 0.10)}
@@ -215,6 +225,13 @@ def genera_scenari(profilo: str, coeff: float, n: int = 1000, seed: int = 42):
         target = rng.integers(1, 3)
         for anno in range(1, 40):
             attesa += 1
+
+            # (1) Crescita di base annua (inflazione + rinnovi CCNL), con
+            #     piccola variabilità: alcuni anni i rinnovi slittano o mancano.
+            base_anno = max(0.0, crescita_base + rng.normal(0, 0.004))
+            molt *= (1.0 + base_anno)
+
+            # (2) Scatti di carriera (promozioni/avanzamenti)
             if anno <= 6:
                 fase_molt, min_t, max_t = boost_junior, 1, 2
             elif anno <= 10:
@@ -387,7 +404,7 @@ def simula_capitale(fattori, rend_fondo_annui, params) -> pd.DataFrame:
 # ESECUZIONE
 # ---------------------------------------------------------------------------
 coeff_totale = COEFF_LAVORATORE[tipo_lavoratore]
-scenari = genera_scenari(profilo_crescita, coeff_totale, n=1000)
+scenari = genera_scenari(profilo_crescita, coeff_totale, crescita_base, n=1000)
 
 # Traiettorie GBM per fondo e PAC, selezione per percentile
 rend_fondo_mat = genera_rendimenti_gbm(rend_medio_fondo, vol_fondo, durata, n=200, seed=7)
