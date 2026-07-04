@@ -12,40 +12,60 @@ st.title("🚀 Confronto Previdenziale: Fondo vs PAC + TFR")
 # ---------------------------------------------------------------------------
 # DATI CCNL / FONDI NEGOZIALI (fonti: accordi CCNL, schede costi COVIP 2024/25)
 # ---------------------------------------------------------------------------
-# Percentuali contributo datore/lavoratore calcolate sulla RAL.
+# Percentuali contributo datore/lavoratore calcolate sui minimi tabellari.
 # TER e costi da schede costi fondo. quota_titoli_stato = frazione del comparto
 # investita in titoli di Stato (tassata al 12,5% invece che al 20%).
+# livelli: {nome: minimo_tabellare_mensile}. mensilita moltiplicano per la RAL.
+# scatto_valore: importo mensile medio di un singolo scatto di anzianità.
+# scatto_ogni_anni / scatti_max: cadenza e numero massimo di scatti.
 CCNL_PRESET = {
     "Metalmeccanico (Cometa)": {
         "fondo": "Cometa",
-        "contrib_lav_pct": 0.012,        # min 1,2% RAL per avere contributo datore
-        "contrib_azienda_pct": 0.020,    # 2,0% RAL
-        "contrib_azienda_u35_pct": 0.022,# 2,2% RAL under 35
+        "contrib_lav_pct": 0.012,        # min 1,2% per avere contributo datore
+        "contrib_azienda_pct": 0.020,    # 2,0% dei minimi
+        "contrib_azienda_u35_pct": 0.022,# 2,2% under 35
         "tfr_pct": 0.0691,               # 6,91% RAL (quota TFR annua)
-        "costo_iniziale": 5.16,          # una tantum a carico lavoratore
-        "costo_fisso": 12.0,             # €/anno
+        "costo_iniziale": 5.16,
+        "costo_fisso": 12.0,
+        "mensilita": 13,
+        # Minimi tabellari mensili dal 1° giugno 2026 (Federmeccanica-Assistal)
+        "livelli": {
+            "D1": 1784.94, "D2": 1979.37, "C1": 2022.12, "C2": 2064.88,
+            "C3": 2211.43, "B1": 2380.00, "B2": 2542.98, "B3": 2680.00,
+            "A1": 2907.00,
+        },
+        "scatto_valore": 30.0,   # €/mese medio per scatto
+        "scatto_ogni_anni": 2,   # biennale
+        "scatti_max": 5,
         "comparti": {
             # nome: (TER annuo, rend. medio atteso, volatilità, quota titoli Stato)
             "Garantito":   (0.0040, 0.010, 0.030, 0.70),
             "Bilanciato":  (0.0020, 0.027, 0.070, 0.45),
             "Azionario":   (0.0025, 0.045, 0.135, 0.20),
         },
-        "mensilita": 13,
     },
     "Commercio (Fon.Te)": {
         "fondo": "Fon.Te",
-        "contrib_lav_pct": 0.0055,       # min 0,55% RAL
-        "contrib_azienda_pct": 0.0155,   # 1,55% RAL
+        "contrib_lav_pct": 0.0055,       # min 0,55%
+        "contrib_azienda_pct": 0.0155,   # 1,55%
         "contrib_azienda_u35_pct": 0.0155,
         "tfr_pct": 0.0691,
         "costo_iniziale": 15.50,
         "costo_fisso": 22.0,
+        "mensilita": 14,
+        # Minimi tabellari mensili (Confcommercio, tabelle da novembre 2025)
+        "livelli": {
+            "VII": 873.00, "VI": 1290.00, "V": 1480.00, "IV": 1572.00,
+            "III": 1700.00, "II": 1850.00, "I": 2000.00, "Quadro": 2183.00,
+        },
+        "scatto_valore": 22.0,   # €/mese medio per scatto
+        "scatto_ogni_anni": 3,   # triennale
+        "scatti_max": 5,
         "comparti": {
             "Garantito":   (0.0077, 0.010, 0.030, 0.70),
             "Bilanciato":  (0.0036, 0.027, 0.070, 0.45),
             "Azionario":   (0.0036, 0.045, 0.135, 0.20),
         },
-        "mensilita": 14,
     },
 }
 
@@ -63,8 +83,39 @@ COEFF_LAVORATORE = {
 # ---------------------------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------------------------
-st.sidebar.header("1. Profilo Lavoratore")
-ral = st.sidebar.number_input("RAL Lorda Annuale Partenza (€)", value=30000, step=1000)
+st.sidebar.header("1. Contratto e Inquadramento")
+ccnl_scelto = st.sidebar.selectbox("CCNL / Fondo negoziale", list(CCNL_PRESET.keys()), index=0)
+preset = CCNL_PRESET[ccnl_scelto]
+mensilita = preset["mensilita"]
+
+livello = st.sidebar.selectbox("Livello di inquadramento", list(preset["livelli"].keys()))
+minimo_mensile = preset["livelli"][livello]
+minimo_annuo = minimo_mensile * mensilita
+
+st.sidebar.caption(
+    f"Minimo tabellare **{livello}**: {minimo_mensile:,.0f} €/mese × {mensilita} "
+    f"mensilità = **{minimo_annuo:,.0f} €/anno**"
+)
+
+st.sidebar.markdown("**Composizione della RAL**")
+anni_anzianita_pregressi = st.sidebar.number_input(
+    "Scatti di anzianità già maturati", min_value=0, max_value=preset["scatti_max"],
+    value=0, step=1,
+    help=f"Max {preset['scatti_max']} scatti, uno ogni {preset['scatto_ogni_anni']} anni. "
+         f"Valore medio {preset['scatto_valore']:.0f} €/mese ciascuno",
+)
+superminimo_mensile = st.sidebar.number_input(
+    "Superminimo (€/mese)", min_value=0, value=0, step=50,
+    help="Voce individuale non prevista dal contratto. NON entra nella base "
+         "di calcolo del contributo aziendale al fondo.",
+)
+premio_produzione_annuo = st.sidebar.number_input(
+    "Premio di produzione (€/anno)", min_value=0, value=0, step=200,
+    help="Premio di risultato variabile. NON entra nella base del contributo "
+         "aziendale al fondo.",
+)
+
+st.sidebar.header("2. Profilo Lavoratore")
 eta = st.sidebar.number_input("Età attuale", min_value=18, max_value=67, value=30, step=1)
 tipo_lavoratore = st.sidebar.selectbox("Tipo di lavoratore", list(COEFF_LAVORATORE.keys()), index=1)
 profilo_crescita = st.sidebar.selectbox(
@@ -78,21 +129,18 @@ crescita_base = st.sidebar.slider(
          "l'inflazione media di lungo periodo + rinnovi contrattuali vale ~1,5–2,5%.",
 ) / 100
 
-st.sidebar.header("2. Contratto e Fondo")
-ccnl_scelto = st.sidebar.selectbox("CCNL / Fondo negoziale", list(CCNL_PRESET.keys()), index=0)
-preset = CCNL_PRESET[ccnl_scelto]
+st.sidebar.header("3. Fondo")
 comparto = st.sidebar.selectbox("Comparto d'investimento", list(preset["comparti"].keys()), index=2)
 ter_fondo, rend_medio_fondo, vol_fondo, quota_ts = preset["comparti"][comparto]
-mensilita = preset["mensilita"]
 
 under35 = eta < 35
 contrib_az_pct = preset["contrib_azienda_u35_pct"] if under35 else preset["contrib_azienda_pct"]
 
 st.sidebar.caption(
-    f"**{preset['fondo']} · {comparto}** — datore {contrib_az_pct*100:.2f}% RAL · "
-    f"tu min {preset['contrib_lav_pct']*100:.2f}% · TFR {preset['tfr_pct']*100:.2f}% · "
-    f"TER {ter_fondo*100:.2f}%/anno · rend. atteso {rend_medio_fondo*100:.1f}% "
-    f"(vol. {vol_fondo*100:.0f}%)"
+    f"**{preset['fondo']} · {comparto}** — datore {contrib_az_pct*100:.2f}% "
+    f"(sui minimi+scatti) · tu min {preset['contrib_lav_pct']*100:.2f}% · "
+    f"TFR {preset['tfr_pct']*100:.2f}% · TER {ter_fondo*100:.2f}%/anno · "
+    f"rend. atteso {rend_medio_fondo*100:.1f}% (vol. {vol_fondo*100:.0f}%)"
 )
 
 vers_vol_extra = st.sidebar.number_input(
@@ -100,26 +148,26 @@ vers_vol_extra = st.sidebar.number_input(
     help="Oltre al contributo minimo previsto dal CCNL. Deducibile dall'IRPEF.",
 )
 
-st.sidebar.header("3. Performance simulata")
+st.sidebar.header("4. Performance simulata")
 st.sidebar.caption("200 scenari stocastici (GBM) sul rendimento del comparto.")
 percentile_perf = st.sidebar.slider(
     "Percentile di performance", 5, 95, 50, 5,
     help="P5 = scenario molto sfortunato · P50 = mediano · P95 = molto fortunato",
 )
 
-st.sidebar.header("4. PAC (ETF)")
+st.sidebar.header("5. PAC (ETF)")
 versamento_pac   = st.sidebar.number_input("Versamento PAC Annuo (€)", min_value=0, value=3445, step=100)
 rend_medio_pac   = st.sidebar.slider("Rendimento medio atteso PAC (%)", 1.0, 12.0, 7.0, 0.1) / 100
 vol_pac          = st.sidebar.slider("Volatilità PAC (%)", 5.0, 25.0, 15.0, 0.5) / 100
 ter_pac          = st.sidebar.number_input("TER PAC (%)", value=0.20, step=0.01) / 100
 tassa_uscita_pac = st.sidebar.slider("Tassazione Plusvalenze PAC (%)", 0, 26, 26)
 
-st.sidebar.header("5. TFR in Azienda")
+st.sidebar.header("6. TFR in Azienda")
 rend_tfr  = st.sidebar.slider("Rendimento Annuo TFR in Azienda (%)", 0.0, 7.0, 2.5, 0.1,
                               help="Rivalutazione legale: 1,5% + 75% inflazione")/100
 tassa_tfr = st.sidebar.slider("Tassazione TFR Uscita (%)", 23, 43, 27)
 
-st.sidebar.header("6. Orizzonte e Uscita")
+st.sidebar.header("7. Orizzonte e Uscita")
 durata = st.sidebar.slider("Anni di investimento", 1, 40, 25)
 anni_gia_iscritto = st.sidebar.number_input(
     "Anni di adesione già maturati al fondo", min_value=0, max_value=40, value=0, step=1,
@@ -306,7 +354,8 @@ def simula_capitale(fattori, rend_fondo_annui, params) -> pd.DataFrame:
       sostitutiva 9-15% in base agli anni di adesione.
     - Deduzione IRPEF calcolata ogni anno sull'aliquota marginale corrente.
     """
-    ral_base = params["ral"]
+    ral_base = params["ral"]              # RAL totale anno 1 (tutte le voci)
+    base_contrib0 = params["base_contrib"] # base contributiva anno 1 (minimi+scatti)
     tfr_pct  = params["tfr_pct"]
     ca_pct   = params["ca_pct"]
     lav_pct  = params["lav_pct"]
@@ -333,19 +382,21 @@ def simula_capitale(fattori, rend_fondo_annui, params) -> pd.DataFrame:
     for a, f in enumerate(fattori):
         anno = a + 1
         ral_curr = ral_base * f
+        base_contrib = base_contrib0 * f      # minimi+scatti, cresce come la RAL
 
-        # Contributi proporzionali alla RAL corrente
+        # Contributi:
+        # - TFR sull'intera retribuzione utile (approssimata = RAL)
+        # - Contributo AZIENDA e minimo LAVORATORE calcolati sui MINIMI TABELLARI
+        #   + scatti (la base contributiva), NON su superminimo e premio.
         tfr_curr = ral_curr * tfr_pct
-        ca_curr  = ral_curr * ca_pct
-        vol_min  = ral_curr * lav_pct
+        ca_curr  = base_contrib * ca_pct
+        vol_min  = base_contrib * lav_pct
         vf_curr  = vol_min + vol_extra          # totale volontario lavoratore
         vp_curr  = vp0 * f
 
-        # Deduzione IRPEF sui contributi deducibili di quest'anno
-        # (lavoratore + azienda, escluso TFR), cap al plafond
+        # Deduzione IRPEF sui contributi deducibili (lavoratore + azienda, no TFR)
         deducibile = min(vf_curr + ca_curr, LIMITE_DEDUCIBILITA)
         aliq_marg = aliquota_marginale(ral_curr)
-        # risparmio attribuibile alla quota versata dal lavoratore
         quota_lav = vf_curr / (vf_curr + ca_curr) if (vf_curr + ca_curr) > 0 else 0
         risparmio_anno = deducibile * aliq_marg * quota_lav
         risparmio_irpef_cum += risparmio_anno
@@ -403,6 +454,16 @@ def simula_capitale(fattori, rend_fondo_annui, params) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # ESECUZIONE
 # ---------------------------------------------------------------------------
+# Composizione della RAL iniziale (Anno 1):
+#   base contributiva = minimi tabellari + scatti già maturati
+#   RAL totale         = base contributiva + superminimo + premio produzione
+scatti_valore_annuo = (
+    anni_anzianita_pregressi * preset["scatto_valore"] * mensilita
+)
+base_contrib_iniziale = minimo_annuo + scatti_valore_annuo
+superminimo_annuo = superminimo_mensile * mensilita
+ral = base_contrib_iniziale + superminimo_annuo + premio_produzione_annuo
+
 coeff_totale = COEFF_LAVORATORE[tipo_lavoratore]
 scenari = genera_scenari(profilo_crescita, coeff_totale, crescita_base, n=1000)
 
@@ -413,7 +474,8 @@ rend_fondo_sel = seleziona_traiettoria_per_percentile(rend_fondo_mat, percentile
 rend_pac_sel   = seleziona_traiettoria_per_percentile(rend_pac_mat,   percentile_perf)
 
 params = dict(
-    ral=ral, tfr_pct=preset["tfr_pct"], ca_pct=contrib_az_pct,
+    ral=ral, base_contrib=base_contrib_iniziale,
+    tfr_pct=preset["tfr_pct"], ca_pct=contrib_az_pct,
     lav_pct=preset["contrib_lav_pct"], vers_vol_extra=vers_vol_extra,
     ter_f=ter_fondo, costo_fisso_f=preset["costo_fisso"], quota_ts=quota_ts,
     vp=versamento_pac, rend_pac_annui=rend_pac_sel, ter_p=ter_pac,
@@ -442,10 +504,33 @@ anni = list(range(1, durata + 1))
 # INTESTAZIONE
 # ---------------------------------------------------------------------------
 st.info(
-    f"**Profilo:** {tipo_lavoratore} · {ccnl_scelto} · comparto {comparto}  \n"
-    f"Coefficiente crescita ×{coeff_totale:.2f} · Performance selezionata: "
-    f"**P{percentile_perf}** (1 traiettoria su 200 scenari stocastici)"
+    f"**Profilo:** {tipo_lavoratore} · {ccnl_scelto} · livello {livello} · comparto {comparto}  \n"
+    f"Coefficiente crescita ×{coeff_totale:.2f} · crescita di base "
+    f"{crescita_base*100:.1f}%/anno (inflazione + rinnovi CCNL) · "
+    f"Performance: **P{percentile_perf}** (1 traiettoria su 200 scenari stocastici)  \n"
+    f"*I valori sono nominali: includono l'inflazione, coerentemente con contributi "
+    f"e montante finale.*"
 )
+
+# --- Composizione della RAL iniziale ---
+st.subheader("🧱 Composizione della RAL (Anno 1)")
+rc1, rc2, rc3, rc4 = st.columns(4)
+rc1.metric("Minimo tabellare", f"€ {minimo_annuo:,.0f}",
+           help=f"Livello {livello}: {minimo_mensile:,.0f} €/mese × {mensilita} mensilità")
+rc2.metric("Scatti anzianità", f"€ {scatti_valore_annuo:,.0f}",
+           help=f"{anni_anzianita_pregressi} scatti × {preset['scatto_valore']:.0f} €/mese × {mensilita}")
+rc3.metric("Superminimo + premio", f"€ {superminimo_annuo + premio_produzione_annuo:,.0f}",
+           help="Voci individuali, non entrano nel calcolo del contributo azienda")
+rc4.metric("RAL totale", f"€ {ral:,.0f}")
+
+st.caption(
+    f"Il contributo aziendale al fondo ({contrib_az_pct*100:.2f}%) e il tuo minimo "
+    f"({preset['contrib_lav_pct']*100:.2f}%) si calcolano sulla **base contributiva** "
+    f"di **€ {base_contrib_iniziale:,.0f}** (minimi tabellari + scatti), non sul "
+    f"superminimo né sul premio. Il TFR ({preset['tfr_pct']*100:.2f}%) invece è "
+    f"sull'intera retribuzione."
+)
+st.divider()
 
 
 # ---------------------------------------------------------------------------
