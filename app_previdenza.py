@@ -395,7 +395,7 @@ st.plotly_chart(fig, use_container_width=True)
 # ---------------------------------------------------------------------------
 # TABELLA ANNO PER ANNO
 # ---------------------------------------------------------------------------
-st.subheader(" Dettaglio Anno per Anno")
+st.subheader("📋 Dettaglio Anno per Anno")
 st.caption(f"Versamenti proporzionali alla crescita RAL — {label_scenario}")
 
 cols_show = [
