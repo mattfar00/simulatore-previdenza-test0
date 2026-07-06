@@ -780,8 +780,24 @@ def simula_capitale(fattori, rend_fondo_annui, params) -> pd.DataFrame:
         # base retributiva al nuovo livello dall'anno indicato in poi.
         molt_liv = molt_livello_annuo[a] if molt_livello_annuo is not None else 1.0
         f_eff = f * molt_liv
+        
+        # La RAL totale cresce con il motore stocastico (include i salti di merito/superminimo)
         ral_curr = ral_base * f_eff
-        base_contrib = base_contrib0 * f_eff  # minimi+scatti, cresce come la RAL
+        
+        # FIX BASE CONTRIBUTIVA: Include Minimo + Scatti Anzianità + Cambi Livello + Inflazione
+        # 1. Calcoliamo quanti scatti hai maturato fino a questo anno di simulazione
+        anni_servizio = (params["scatti_pregressi"] * params["scatto_freq"]) + anno
+        scatti_maturati = min(params["scatti_max"], anni_servizio // params["scatto_freq"])
+        
+        # 2. Minimo tabellare e valore scatti adeguati al livello attuale (in caso di promozione 'molt_liv')
+        minimo_livello_curr = params["minimo_partenza_annuo"] * molt_liv
+        valore_scatti_curr = scatti_maturati * params["scatto_valore"] * molt_liv
+        
+        # 3. Base teorica contrattuale = minimo + scatti maturati
+        base_teorica = minimo_livello_curr + valore_scatti_curr
+        
+        # 4. Applichiamo la rivalutazione ISTAT/Rinnovi CCNL (crescita_base) nel tempo
+        base_contrib = base_teorica * ((1 + params["crescita_base"]) ** a)
 
         # Contributi:
         # - TFR sull'intera retribuzione utile (approssimata = RAL)
@@ -924,8 +940,16 @@ if usa_passaggi_livello and passaggi_livello:
         minimo_attivo = preset["livelli"][livello_attivo]
         molt_livello_annuo[a] = minimo_attivo / minimo_mensile
 
+# --- FIX: Inclusi i parametri esatti per calcolare la base contributiva in modo dinamico ---
 params = dict(
-    ral=ral, base_contrib=base_contrib_iniziale,
+    ral=ral, 
+    base_contrib=base_contrib_iniziale,
+    crescita_base=crescita_base,
+    minimo_partenza_annuo=minimo_annuo,
+    scatti_pregressi=anni_anzianita_pregressi,
+    scatto_valore=scatto_valore_livello * mensilita,
+    scatto_freq=preset["scatto_ogni_anni"],
+    scatti_max=preset["scatti_max"],
     tfr_pct=preset["tfr_pct"], ca_pct=contrib_az_pct,
     lav_pct=preset["contrib_lav_pct"], vers_vol_extra=vers_vol_extra,
     ter_f=ter_fondo, costo_fisso_f=preset["costo_fisso"], quota_ts=quota_ts,
@@ -1187,11 +1211,7 @@ if usa_portafoglio:
         # Matrice di correlazione (sui rendimenti, non sui prezzi)
         with st.expander("🔗 Matrice di correlazione (sui rendimenti mensili)"):
             df_corr = pd.DataFrame(pi["corr"], index=pi["tickers"], columns=pi["tickers"])
-            
-            # --- FIX: Mostra la tabella senza i colori per non richiedere matplotlib ---
             st.dataframe(df_corr, use_container_width=True)
-            # ---------------------------------------------------------------------------
-            
             st.caption(
                 "Calcolata sui rendimenti mensili (non sui prezzi, che darebbero "
                 "correlazioni gonfiate dal trend comune). Usata per generare shock "
@@ -1234,8 +1254,6 @@ fig.add_trace(go.Scatter(x=anni, y=df_main["Fondo Netto (€)"], name="Fondo Pen
                          line=dict(color="#2a78d6", width=3)))
 fig.add_trace(go.Scatter(x=anni, y=df_main["PAC + TFR Netto (€)"], name="PAC + TFR",
                          line=dict(color="#1baf7a", width=3)))
-
-# --- NUOVA LINEA: SOLO PAC ---
 fig.add_trace(go.Scatter(x=anni, y=df_main["PAC Netto (€)"], name="Solo PAC",
                          line=dict(color="#9b59b6", width=2, dash="dash")))
 
@@ -1256,7 +1274,6 @@ st.plotly_chart(fig, use_container_width=True)
 st.subheader("📋 Dettaglio Anno per Anno")
 st.caption("RAL e contributi crescono insieme; risparmio IRPEF su aliquota marginale corrente.")
 
-# --- AGGIUNTO IL "PAC NETTO (€)" ALLA LISTA DELLE COLONNE DA MOSTRARE ---
 cols_show = ["Anno", "RAL (€)", "Contrib. Min. CCNL (€)", "Vers. Volontario (€)", "TFR al Fondo (€)",
              "Contrib. Aziendale (€)", "Risparmio IRPEF (€)", "PAC annuo (€)",
              "Aliq. uscita fondo (%)", "Fondo Netto (€)", "PAC + TFR Netto (€)", "PAC Netto (€)"]
