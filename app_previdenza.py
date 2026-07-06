@@ -965,16 +965,16 @@ params = dict(
 fattori_mediani = [float(np.percentile([s[a] for s in scenari], 50)) for a in range(durata)]
 df_main = simula_capitale(fattori_mediani, rend_fondo_sel, params)
 
-# Banda P25-P75 sulla carriera (rendimento fissato al percentile scelto)
+# Banda P10-P90 sulla carriera (rendimento fissato al percentile scelto)
 mat_fondo, mat_pac = [], []
 for s in scenari[:300]:   # sottocampione per velocità
     d = simula_capitale(s[:durata], rend_fondo_sel, params)
     mat_fondo.append(d["Fondo Netto (€)"].tolist())
     mat_pac.append(d["PAC + TFR Netto (€)"].tolist())
-p25_fondo = np.percentile(mat_fondo, 25, axis=0).tolist()
-p75_fondo = np.percentile(mat_fondo, 75, axis=0).tolist()
-p25_pac   = np.percentile(mat_pac, 25, axis=0).tolist()
-p75_pac   = np.percentile(mat_pac, 75, axis=0).tolist()
+p10_fondo = np.percentile(mat_fondo, 10, axis=0).tolist()
+p90_fondo = np.percentile(mat_fondo, 90, axis=0).tolist()
+p10_pac   = np.percentile(mat_pac, 10, axis=0).tolist()
+p90_pac   = np.percentile(mat_pac, 90, axis=0).tolist()
 anni = list(range(1, durata + 1))
 
 
