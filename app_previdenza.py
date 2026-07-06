@@ -120,6 +120,53 @@ COEFF_LAVORATORE = {
 }
 
 # ---------------------------------------------------------------------------
+# CATALOGO ETF PREDEFINITI (legenda) — ticker Yahoo Finance
+# ---------------------------------------------------------------------------
+# Catalogo indicativo di ETF UCITS comunemente usati nei PAC, organizzato per
+# categoria. Nome leggibile -> ticker Yahoo Finance. Serve solo da comodo
+# elenco di partenza: l'utente può comunque aggiungere qualsiasi altro ticker
+# a mano nel campo "Aggiungi ticker manuale".
+CATALOGO_ETF = {
+    "Azionario Globale": {
+        "iShares Core MSCI World (SWDA.MI)": "SWDA.MI",
+        "Vanguard FTSE All-World (VWCE.DE)": "VWCE.DE",
+        "Xtrackers MSCI World (XDWD.MI)": "XDWD.MI",
+        "iShares MSCI ACWI (SSAC.MI)": "SSAC.MI",
+    },
+    "Azionario USA": {
+        "iShares Core S&P 500 (CSSPX.MI)": "CSSPX.MI",
+        "Xtrackers S&P 500 (XSPX.MI)": "XSPX.MI",
+        "Invesco Nasdaq-100 (EQQQ.MI)": "EQQQ.MI",
+    },
+    "Azionario Europa": {
+        "iShares Core MSCI EMU (EMU.MI)": "EMU.MI",
+        "Xtrackers Euro Stoxx 50 (XESC.MI)": "XESC.MI",
+        "iShares STOXX Europe 600 (EXSA.MI)": "EXSA.MI",
+    },
+    "Azionario Mercati Emergenti": {
+        "iShares Core MSCI EM IMI (EIMI.MI)": "EIMI.MI",
+        "Xtrackers MSCI Emerging Markets (XMME.MI)": "XMME.MI",
+    },
+    "Obbligazionario": {
+        "iShares Core Global Aggregate Bond (AGGH.MI)": "AGGH.MI",
+        "iShares Euro Government Bond 3-5y (IBGX.MI)": "IBGX.MI",
+        "iShares Euro Corporate Bond (IEBC.MI)": "IEBC.MI",
+        "Xtrackers Global Government Bond (XG7S.MI)": "XG7S.MI",
+    },
+    "Oro e Materie Prime": {
+        "iShares Physical Gold (SGLN.MI)": "SGLN.MI",
+        "Invesco Physical Gold (SGLD.MI)": "SGLD.MI",
+        "WisdomTree Broad Commodities (WCOA.MI)": "WCOA.MI",
+    },
+    "Immobiliare (REIT)": {
+        "iShares Developed Markets Property Yield (IWDP.MI)": "IWDP.MI",
+        "Xtrackers FTSE EPRA/NAREIT Global (XREA.MI)": "XREA.MI",
+    },
+}
+# Mappa inversa ticker -> nome leggibile, utile per mostrare la legenda finale
+TICKER_TO_NOME = {t: nome for cat in CATALOGO_ETF.values() for nome, t in cat.items()}
+
+# ---------------------------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------------------------
 st.sidebar.header("1. Contratto e Inquadramento")
@@ -228,14 +275,68 @@ usa_portafoglio = modo_pac.startswith("Portafoglio")
 rend_medio_pac, vol_pac = 0.07, 0.15   # fallback se il portafoglio non è disponibile
 tickers_input = pesi_input = ""
 anni_storico, override_rend, rend_override_val = 10, False, None
+
 if usa_portafoglio:
-    tickers_input = st.sidebar.text_input(
-        "Ticker (separati da virgola)", value="SWDA.MI, AGGH.MI",
-        help="Ticker Yahoo Finance. Es: SWDA.MI, VWCE.DE, AGGH.MI, CSSPX.MI",
+    st.sidebar.markdown("**Catalogo ETF predefiniti**")
+    st.sidebar.caption(
+        "Seleziona uno o più ETF dalla legenda qui sotto, oppure aggiungine "
+        "altri a mano nel campo in fondo. I ticker sono quelli usati da Yahoo "
+        "Finance."
     )
-    pesi_input = st.sidebar.text_input(
-        "Pesi % (stesso numero dei ticker)", value="70, 30",
+
+    selezione_catalogo = {}
+    for categoria, etfs in CATALOGO_ETF.items():
+        scelti = st.sidebar.multiselect(categoria, list(etfs.keys()), key=f"cat_{categoria}")
+        for nome in scelti:
+            selezione_catalogo[etfs[nome]] = nome
+
+    tickers_manuali_str = st.sidebar.text_input(
+        "Aggiungi ticker manuale (separati da virgola, opzionale)", value="",
+        help="Per ETF/azioni non presenti nel catalogo sopra. Es: XYZ.MI, ABC.DE",
     )
+    tickers_manuali = [t.strip().upper() for t in tickers_manuali_str.split(",") if t.strip()]
+
+    # Unione: catalogo (ordine di selezione) + manuali, senza duplicati
+    tickers_scelti = list(selezione_catalogo.keys())
+    for t in tickers_manuali:
+        if t not in tickers_scelti:
+            tickers_scelti.append(t)
+
+    if len(tickers_scelti) == 0:
+        st.sidebar.warning(
+            "Nessun ticker selezionato: seleziona almeno un ETF dal catalogo "
+            "o inseriscine uno a mano."
+        )
+
+    st.sidebar.markdown("**Pesi (%) per ciascun ticker selezionato**")
+    pesi_dict = {}
+    peso_default = round(100 / len(tickers_scelti), 1) if tickers_scelti else 0.0
+    for t in tickers_scelti:
+        etichetta = TICKER_TO_NOME.get(t, t)
+        pesi_dict[t] = st.sidebar.number_input(
+            f"Peso {etichetta}", min_value=0.0, max_value=100.0,
+            value=peso_default, step=1.0, key=f"peso_{t}",
+        )
+
+    somma_pesi = sum(pesi_dict.values())
+    if tickers_scelti:
+        if abs(somma_pesi - 100.0) > 0.01:
+            st.sidebar.caption(
+                f"Somma pesi attuale: {somma_pesi:.1f}% — verrà normalizzata "
+                f"automaticamente a 100% nella simulazione."
+            )
+        else:
+            st.sidebar.caption(f"Somma pesi: {somma_pesi:.1f}% ✓")
+
+    tickers_input = ", ".join(tickers_scelti)
+    pesi_input = ", ".join(str(pesi_dict[t]) for t in tickers_scelti)
+
+    with st.sidebar.expander("📖 Legenda completa ETF disponibili"):
+        for categoria, etfs in CATALOGO_ETF.items():
+            st.markdown(f"**{categoria}**")
+            for nome, ticker in etfs.items():
+                st.caption(f"`{ticker}` — {nome}")
+
     anni_storico = st.sidebar.slider("Anni di storico per la stima", 5, 20, 10)
     override_rend = st.sidebar.checkbox(
         "Correggi a mano il rendimento atteso", value=False,
@@ -714,19 +815,26 @@ rend_fondo_sel = seleziona_traiettoria_per_percentile(rend_fondo_mat, percentile
 portafoglio_info = None
 errore_portafoglio = None
 if usa_portafoglio:
-    try:
-        tickers, pesi = parse_ticker_pesi(tickers_input, pesi_input)
-        prezzi_df = scarica_prezzi_mensili(tuple(tickers), anni_storico)
-        portafoglio_info = stima_parametri_portafoglio(prezzi_df, pesi)
-        rend_override_eff = rend_override_val if override_rend else None
-        rend_pac_mat = genera_rendimenti_portafoglio_gbm(
-            portafoglio_info["media_mensile"], portafoglio_info["cholesky_mensile"],
-            pesi, durata, rend_override=rend_override_eff, n=200, seed=13,
+    if not tickers_input.strip():
+        errore_portafoglio = (
+            "Nessun ticker selezionato: seleziona almeno un ETF dal catalogo "
+            "nella sidebar o inseriscine uno a mano."
         )
-    except Exception as e:
-        errore_portafoglio = str(e)
-        # Fallback: GBM parametrico semplice se il download/stima fallisce
         rend_pac_mat = genera_rendimenti_gbm(0.07, 0.15, durata, n=200, seed=11)
+    else:
+        try:
+            tickers, pesi = parse_ticker_pesi(tickers_input, pesi_input)
+            prezzi_df = scarica_prezzi_mensili(tuple(tickers), anni_storico)
+            portafoglio_info = stima_parametri_portafoglio(prezzi_df, pesi)
+            rend_override_eff = rend_override_val if override_rend else None
+            rend_pac_mat = genera_rendimenti_portafoglio_gbm(
+                portafoglio_info["media_mensile"], portafoglio_info["cholesky_mensile"],
+                pesi, durata, rend_override=rend_override_eff, n=200, seed=13,
+            )
+        except Exception as e:
+            errore_portafoglio = str(e)
+            # Fallback: GBM parametrico semplice se il download/stima fallisce
+            rend_pac_mat = genera_rendimenti_gbm(0.07, 0.15, durata, n=200, seed=11)
 else:
     rend_pac_mat = genera_rendimenti_gbm(rend_medio_pac, vol_pac, durata, n=200, seed=11)
 
@@ -938,7 +1046,14 @@ st.divider()
 # ---------------------------------------------------------------------------
 if usa_portafoglio:
     st.subheader("📈 Portafoglio PAC a Ticker")
-    if errore_portafoglio:
+
+    if not tickers_input.strip():
+        st.warning(
+            "Nessun ticker selezionato. Seleziona uno o più ETF dal catalogo "
+            "nella sidebar (sezione '5. PAC (ETF)') oppure inserisci un ticker "
+            "manuale. Nel frattempo uso un GBM di fallback (rend. 7%, vol. 15%)."
+        )
+    elif errore_portafoglio:
         st.error(
             f"Impossibile scaricare/stimare il portafoglio: {errore_portafoglio}  \n"
             f"Uso un GBM di fallback (rend. 7%, vol. 15%) finché non correggi "
@@ -960,8 +1075,10 @@ if usa_portafoglio:
                 f"(volatilità e correlazioni restano quelle storiche)."
             )
 
-        # Tabella per singolo asset
+        # Tabella per singolo asset, con nome leggibile dal catalogo se disponibile
+        nomi_leggibili = [TICKER_TO_NOME.get(t, t) for t in pi["tickers"]]
         df_asset = pd.DataFrame({
+            "Nome": nomi_leggibili,
             "Ticker": pi["tickers"],
             "Peso (%)": (pesi * 100).round(1),
             "Rend. annuo storico (%)": (pi["rend_annuo_asset"] * 100).round(2),
