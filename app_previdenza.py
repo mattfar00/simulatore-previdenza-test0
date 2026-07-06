@@ -428,7 +428,7 @@ usa_entrambi = st.sidebar.checkbox("Uso sia Fondo che PAC (somma senza TFR)", va
 # ---------------------------------------------------------------------------
 # IRPEF
 # ---------------------------------------------------------------------------
-LIMITE_DEDUCIBILITA = 5164.57
+LIMITE_DEDUCIBILITA = 5
 
 def aliquota_marginale(imponibile: float) -> float:
     """Aliquota IRPEF marginale (scaglioni 2025: 23% / 35% / 43%)."""
