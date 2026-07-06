@@ -428,7 +428,7 @@ usa_entrambi = st.sidebar.checkbox("Uso sia Fondo che PAC (somma senza TFR)", va
 # ---------------------------------------------------------------------------
 # IRPEF
 # ---------------------------------------------------------------------------
-LIMITE_DEDUCIBILITA = 5
+LIMITE_DEDUCIBILITA = 5164.57
 
 def aliquota_marginale(imponibile: float) -> float:
     """Aliquota IRPEF marginale (scaglioni 2025: 23% / 35% / 43%)."""
@@ -596,6 +596,12 @@ def parse_ticker_pesi(tickers_str: str, pesi_str: str):
 
 @st.cache_data(show_spinner=False)
 def scarica_prezzi_mensili(tickers: tuple, anni: int):
+    """
+    Scarica lo storico giornaliero da Yahoo Finance per ciascun ticker e lo
+    ricampiona a fine mese. Richiede connessione internet (yfinance).
+    Restituisce un DataFrame (colonne=ticker, righe=mesi) di prezzi Adj Close,
+    allineato sulle date comuni a tutti i ticker.
+    """
     import yfinance as yf
     import pandas as pd
     from datetime import date
@@ -618,7 +624,6 @@ def scarica_prezzi_mensili(tickers: tuple, anni: int):
         else:
             col_data = data.iloc[:, 0]
             
-        # Se yfinance ha restituito una sotto-tabella (DataFrame), estraiamo la colonna 1D
         if isinstance(col_data, pd.DataFrame):
             col_data = col_data.iloc[:, 0]
             
@@ -840,6 +845,7 @@ def simula_capitale(fattori, rend_fondo_annui, params) -> pd.DataFrame:
             "Aliq. uscita fondo (%)": aliq_uscita * 100,
             "Fondo Netto (€)": netto_fondo,
             "PAC + TFR Netto (€)": netto_pac_tfr,
+            "PAC Netto (€)": netto_pac,
             "Fondo + PAC Netto (€)": netto_fondo_pac,
         })
 
@@ -1181,8 +1187,11 @@ if usa_portafoglio:
         # Matrice di correlazione (sui rendimenti, non sui prezzi)
         with st.expander("🔗 Matrice di correlazione (sui rendimenti mensili)"):
             df_corr = pd.DataFrame(pi["corr"], index=pi["tickers"], columns=pi["tickers"])
-            st.dataframe(df_corr.style.format("{:.2f}").background_gradient(
-                cmap="RdYlGn_r", vmin=-1, vmax=1), use_container_width=True)
+            
+            # --- FIX: Mostra la tabella senza i colori per non richiedere matplotlib ---
+            st.dataframe(df_corr, use_container_width=True)
+            # ---------------------------------------------------------------------------
+            
             st.caption(
                 "Calcolata sui rendimenti mensili (non sui prezzi, che darebbero "
                 "correlazioni gonfiate dal trend comune). Usata per generare shock "
@@ -1225,6 +1234,11 @@ fig.add_trace(go.Scatter(x=anni, y=df_main["Fondo Netto (€)"], name="Fondo Pen
                          line=dict(color="#2a78d6", width=3)))
 fig.add_trace(go.Scatter(x=anni, y=df_main["PAC + TFR Netto (€)"], name="PAC + TFR",
                          line=dict(color="#1baf7a", width=3)))
+
+# --- NUOVA LINEA: SOLO PAC ---
+fig.add_trace(go.Scatter(x=anni, y=df_main["PAC Netto (€)"], name="Solo PAC",
+                         line=dict(color="#9b59b6", width=2, dash="dash")))
+
 if usa_entrambi:
     fig.add_trace(go.Scatter(x=anni, y=df_main["Fondo + PAC Netto (€)"],
                              name="Fondo + PAC (senza TFR)",
@@ -1242,9 +1256,10 @@ st.plotly_chart(fig, use_container_width=True)
 st.subheader("📋 Dettaglio Anno per Anno")
 st.caption("RAL e contributi crescono insieme; risparmio IRPEF su aliquota marginale corrente.")
 
+# --- AGGIUNTO IL "PAC NETTO (€)" ALLA LISTA DELLE COLONNE DA MOSTRARE ---
 cols_show = ["Anno", "RAL (€)", "Contrib. Min. CCNL (€)", "Vers. Volontario (€)", "TFR al Fondo (€)",
              "Contrib. Aziendale (€)", "Risparmio IRPEF (€)", "PAC annuo (€)",
-             "Aliq. uscita fondo (%)", "Fondo Netto (€)", "PAC + TFR Netto (€)"]
+             "Aliq. uscita fondo (%)", "Fondo Netto (€)", "PAC + TFR Netto (€)", "PAC Netto (€)"]
 if usa_entrambi:
     cols_show.append("Fondo + PAC Netto (€)")
 
