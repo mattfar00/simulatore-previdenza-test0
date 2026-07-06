@@ -670,7 +670,8 @@ def simula_capitale(fattori, rend_fondo_annui, params) -> pd.DataFrame:
         rows.append({
             "Anno": anno,
             "RAL (€)": ral_curr,
-            "Vers. Volontario (€)": vf_curr,
+            "Contrib. Min. CCNL (€)": vol_min,
+            "Vers. Volontario (€)": vol_extra,
             "TFR al Fondo (€)": tfr_curr,
             "Contrib. Aziendale (€)": ca_curr,
             "Risparmio IRPEF (€)": risparmio_anno,
@@ -916,7 +917,7 @@ st.divider()
 # ---------------------------------------------------------------------------
 st.subheader("💳 Costo Mensile Effettivo (Anno 1)")
 r0 = df_main.iloc[0]
-vers_vol_anno1 = r0["Vers. Volontario (€)"]
+vers_vol_anno1 = r0["Contrib. Min. CCNL (€)"] + r0["Vers. Volontario (€)"]
 risparmio_anno1 = r0["Risparmio IRPEF (€)"]
 ca_anno1 = r0["Contrib. Aziendale (€)"]
 costo_netto_fondo_anno1 = max(0.0, vers_vol_anno1 - risparmio_anno1)
@@ -1032,7 +1033,7 @@ st.plotly_chart(fig, use_container_width=True)
 st.subheader("📋 Dettaglio Anno per Anno")
 st.caption("RAL e contributi crescono insieme; risparmio IRPEF su aliquota marginale corrente.")
 
-cols_show = ["Anno", "RAL (€)", "Vers. Volontario (€)", "TFR al Fondo (€)",
+cols_show = ["Anno", "RAL (€)", "Contrib. Min. CCNL (€)", "Vers. Volontario (€)", "TFR al Fondo (€)",
              "Contrib. Aziendale (€)", "Risparmio IRPEF (€)", "PAC annuo (€)",
              "Aliq. uscita fondo (%)", "Fondo Netto (€)", "PAC + TFR Netto (€)"]
 if usa_entrambi:
