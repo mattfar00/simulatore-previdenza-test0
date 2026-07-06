@@ -1235,9 +1235,9 @@ st.caption("Linea = carriera mediana P50. Banda = P25–P75 sulla variabilità d
 last = df_main.iloc[-1]
 cols = st.columns(4 if usa_entrambi else 3)
 cols[0].metric("Fondo Netto", f"€ {last['Fondo Netto (€)']:,.0f}",
-               help=f"P25: {p25_fondo[-1]:,.0f} — P75: {p75_fondo[-1]:,.0f}")
+               help=f"P90: {p10_fondo[-1]:,.0f} — P90: {p90_fondo[-1]:,.0f}")
 cols[1].metric("PAC + TFR Netto", f"€ {last['PAC + TFR Netto (€)']:,.0f}",
-               help=f"P25: {p25_pac[-1]:,.0f} — P75: {p75_pac[-1]:,.0f}")
+               help=f"P10: {p10_pac[-1]:,.0f} — P90: {p90_pac[-1]:,.0f}")
 cols[2].metric("RAL Finale", f"€ {last['RAL (€)']:,.0f}",
                help=f"× {last['RAL (€)']/ral:.2f} vs partenza")
 if usa_entrambi:
