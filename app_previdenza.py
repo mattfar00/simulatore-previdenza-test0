@@ -613,7 +613,7 @@ def scarica_prezzi_mensili(tickers: tuple, anni: int):
     serie = {}
     for t in tickers:
         data = yf.download(t, start=start.isoformat(), end=end.isoformat(),
-                           progress=False, auto_adjust=True)
+                           progress=False, auto_adjust=False, actions=False)   #proviamo auto_adjust false per vedere se prende ishares gold
         if data is None or data.empty:
             raise ValueError(f"Nessun dato scaricato per il ticker '{t}'. "
                              f"Verifica che sia corretto su Yahoo Finance.")
