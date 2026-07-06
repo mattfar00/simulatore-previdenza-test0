@@ -1244,10 +1244,10 @@ if usa_entrambi:
     cols[3].metric("Fondo + PAC (senza TFR)", f"€ {last['Fondo + PAC Netto (€)']:,.0f}")
 
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=anni + anni[::-1], y=p75_fondo + p25_fondo[::-1],
+fig.add_trace(go.Scatter(x=anni + anni[::-1], y=p90_fondo + p10_fondo[::-1],
                          fill="toself", fillcolor="rgba(42,120,214,0.12)",
                          line=dict(color="rgba(0,0,0,0)"), name="Fondo P25–P75"))
-fig.add_trace(go.Scatter(x=anni + anni[::-1], y=p75_pac + p25_pac[::-1],
+fig.add_trace(go.Scatter(x=anni + anni[::-1], y=p90_pac + p10_pac[::-1],
                          fill="toself", fillcolor="rgba(27,175,122,0.12)",
                          line=dict(color="rgba(0,0,0,0)"), name="PAC+TFR P25–P75"))
 fig.add_trace(go.Scatter(x=anni, y=df_main["Fondo Netto (€)"], name="Fondo Pensione",
