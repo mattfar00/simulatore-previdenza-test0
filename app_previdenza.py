@@ -768,9 +768,7 @@ def scarica_prezzi_mensili(tickers: tuple, anni: int):
                            progress=False, auto_adjust=False, actions=False)
         if data is None or data.empty:
             raise ValueError(f"Nessun dato scaricato per '{t}'. Verifica il ticker su Yahoo.")
-       if #"Adj Close" in data.columns:
-           # col_data = data["Adj Close"]
-         "Close" in data.columns:
+       if "Close" in data.columns:
             col_data = data["Close"]
         else:
             col_data = data.iloc[:, 0]
