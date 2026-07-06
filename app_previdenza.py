@@ -596,13 +596,8 @@ def parse_ticker_pesi(tickers_str: str, pesi_str: str):
 
 @st.cache_data(show_spinner=False)
 def scarica_prezzi_mensili(tickers: tuple, anni: int):
-    """
-    Scarica lo storico giornaliero da Yahoo Finance per ciascun ticker e lo
-    ricampiona a fine mese. Richiede connessione internet (yfinance).
-    Restituisce un DataFrame (colonne=ticker, righe=mesi) di prezzi Adj Close,
-    allineato sulle date comuni a tutti i ticker.
-    """
     import yfinance as yf
+    import pandas as pd
     from datetime import date
     from dateutil.relativedelta import relativedelta
 
@@ -612,15 +607,28 @@ def scarica_prezzi_mensili(tickers: tuple, anni: int):
     serie = {}
     for t in tickers:
         data = yf.download(t, start=start.isoformat(), end=end.isoformat(),
-                            progress=False, auto_adjust=True)
+                           progress=False, auto_adjust=True)
         if data is None or data.empty:
             raise ValueError(f"Nessun dato scaricato per il ticker '{t}'. "
-                              f"Verifica che sia corretto su Yahoo Finance.")
-        col = "Close" if "Close" in data.columns else data.columns[0]
-        prezzi_mensili = data[col].resample("ME").last()
+                             f"Verifica che sia corretto su Yahoo Finance.")
+        
+        # --- FIX: Gestione del nuovo formato MultiIndex di yfinance ---
+        if "Close" in data.columns:
+            col_data = data["Close"]
+        else:
+            col_data = data.iloc[:, 0]
+            
+        # Se yfinance ha restituito una sotto-tabella (DataFrame), estraiamo la colonna 1D
+        if isinstance(col_data, pd.DataFrame):
+            col_data = col_data.iloc[:, 0]
+            
+        prezzi_mensili = col_data.resample("ME").last()
+        # --------------------------------------------------------------
+        
         serie[t] = prezzi_mensili
 
     df = pd.DataFrame(serie).dropna()
+    
     if len(df) < 24:
         raise ValueError(
             f"Storico comune troppo corto ({len(df)} mesi): riduci gli anni "
