@@ -100,49 +100,43 @@ CCNL_PRESET = {
 }
 
 # ---------------------------------------------------------------------------
-# STORICO RENDIMENTI DEI COMPARTI — caricato da CSV esterno (data/)
+# STORICO RENDIMENTI DEI COMPARTI — caricato dai due CSV (cometa.csv e fonte.csv)
 # ---------------------------------------------------------------------------
-# I dati storici NON sono più hard-coded qui: vivono in un CSV separato,
-# così è facile aggiornarli (aggiungere un mese) o versionarli in git senza
-# toccare il codice Python. Formato atteso, una riga per (fondo, comparto,
-# anno, mese):
-#
-#   fondo,comparto,anno,mese,quota
-#   Cometa,Azionario,2025,12,25.337
-#   Fon.Te,Dinamico,2025,12,24.976
-#
-# Percorsi cercati in ordine (il primo che esiste viene usato):
-PERCORSI_STORICO_CANDIDATI = [
-    "data/quote_storiche_fondi.csv",
-    "quote_storiche_fondi.csv",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "quote_storiche_fondi.csv"),
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "quote_storiche_fondi.csv"),
-]
-
 @st.cache_data
 def carica_quote_storiche():
-    """
-    Legge il CSV delle quote mensili storiche e lo trasforma in due strutture:
-    - STORICO_MENSILE[fondo][comparto]  -> lista di rendimenti mensili (ordine cronologico)
-    - STORICO_ANNUALE[fondo][comparto]  -> lista di rendimenti annui Dic->Dic
+    quote = {}
+    percorsi_trovati = []
 
-    Ritorna (mensile, annuale, percorso_usato) oppure ({}, {}, None) se il file
-    non è stato trovato in nessuno dei percorsi candidati.
-    """
-    percorso = next((p for p in PERCORSI_STORICO_CANDIDATI if os.path.isfile(p)), None)
-    if percorso is None:
+    # 1. Carica i dati di COMETA
+    path_cometa = os.path.join("data", "cometa.csv")
+    if not os.path.exists(path_cometa): path_cometa = "cometa.csv" # fallback
+    
+    if os.path.exists(path_cometa):
+        percorsi_trovati.append(path_cometa)
+        df_c = pd.read_csv(path_cometa)
+        for _, row in df_c.iterrows():
+            y, m = int(row['anno']), int(row['mese'])
+            for comp in ["Garantito", "Bilanciato", "Azionario", "Monetario"]:
+                if comp in df_c.columns and pd.notna(row[comp]):
+                    quote.setdefault(("Cometa", comp), {})[(y, m)] = float(row[comp])
+
+    # 2. Carica i dati di FON.TE
+    path_fonte = os.path.join("data", "fonte.csv")
+    if not os.path.exists(path_fonte): path_fonte = "fonte.csv" # fallback
+    
+    if os.path.exists(path_fonte):
+        percorsi_trovati.append(path_fonte)
+        df_f = pd.read_csv(path_fonte)
+        for _, row in df_f.iterrows():
+            y, m = int(row['anno']), int(row['mese'])
+            for comp in ["Conservativo", "Sviluppo", "Dinamico", "Crescita"]:
+                if comp in df_f.columns and pd.notna(row[comp]):
+                    quote.setdefault(("Fon.Te", comp), {})[(y, m)] = float(row[comp])
+
+    if not percorsi_trovati:
         return {}, {}, None
 
-    quote = {}  # (fondo, comparto) -> {(anno, mese): quota}
-    with open(percorso, newline="", encoding="utf-8") as fh:
-        for row in csv.DictReader(fh):
-            fondo = row["fondo"].strip()
-            comp = row["comparto"].strip()
-            anno = int(row["anno"])
-            mese = int(row["mese"])
-            quota = float(row["quota"])
-            quote.setdefault((fondo, comp), {})[(anno, mese)] = quota
-
+    # Trasforma le quote in rendimenti percentuali (mensili e annuali)
     mensile, annuale = {}, {}
     for (fondo, comp), serie in quote.items():
         chiavi = sorted(serie)
@@ -157,16 +151,14 @@ def carica_quote_storiche():
                 rend_a.append(round(serie[(y, 12)] / serie[(y - 1, 12)] - 1, 5))
         annuale.setdefault(fondo, {})[comp] = rend_a
 
-    return mensile, annuale, percorso
+    return mensile, annuale, percorsi_trovati
 
-STORICO_MENSILE, STORICO_ANNUALE, _PERCORSO_STORICO = carica_quote_storiche()
+STORICO_MENSILE, STORICO_ANNUALE, _PERCORSI = carica_quote_storiche()
 
-if _PERCORSO_STORICO is None:
+if not _PERCORSI:
     st.error(
-        "**File dati storici non trovato.** Cercato in: "
-        + ", ".join(f"`{p}`" for p in PERCORSI_STORICO_CANDIDATI)
-        + ".\n\nMetti `quote_storiche_fondi.csv` in una cartella `data/` accanto "
-          "allo script (o nella stessa cartella dello script) e ricarica la pagina."
+        "**File dati storici non trovati.** Assicurati che i file `cometa.csv` e "
+        "`fonte.csv` si trovino all'interno della cartella `data/` su GitHub."
     )
     st.stop()
 
