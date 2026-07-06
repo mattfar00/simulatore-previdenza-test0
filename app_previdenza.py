@@ -214,8 +214,42 @@ percentile_perf = st.sidebar.slider(
 
 st.sidebar.header("5. PAC (ETF)")
 versamento_pac   = st.sidebar.number_input("Versamento PAC Annuo (€)", min_value=0, value=3445, step=100)
-rend_medio_pac   = st.sidebar.slider("Rendimento medio atteso PAC (%)", 1.0, 12.0, 7.0, 0.1) / 100
-vol_pac          = st.sidebar.slider("Volatilità PAC (%)", 5.0, 25.0, 15.0, 0.5) / 100
+
+modo_pac = st.sidebar.radio(
+    "Modalità PAC",
+    ["Semplice (parametri manuali)", "Portafoglio ticker (dati storici)"],
+    index=0,
+    help="Con i ticker, rendimenti/volatilità/correlazioni vengono stimati dallo "
+         "storico Yahoo Finance (rendimenti mensili) e la simulazione usa asset "
+         "correlati via decomposizione di Cholesky.",
+)
+usa_portafoglio = modo_pac.startswith("Portafoglio")
+
+rend_medio_pac, vol_pac = 0.07, 0.15   # fallback se il portafoglio non è disponibile
+tickers_input = pesi_input = ""
+anni_storico, override_rend, rend_override_val = 10, False, None
+if usa_portafoglio:
+    tickers_input = st.sidebar.text_input(
+        "Ticker (separati da virgola)", value="SWDA.MI, AGGH.MI",
+        help="Ticker Yahoo Finance. Es: SWDA.MI, VWCE.DE, AGGH.MI, CSSPX.MI",
+    )
+    pesi_input = st.sidebar.text_input(
+        "Pesi % (stesso numero dei ticker)", value="70, 30",
+    )
+    anni_storico = st.sidebar.slider("Anni di storico per la stima", 5, 20, 10)
+    override_rend = st.sidebar.checkbox(
+        "Correggi a mano il rendimento atteso", value=False,
+        help="Volatilità e correlazioni restano quelle storiche (stime affidabili); "
+             "il rendimento medio storico è un cattivo predittore del futuro e "
+             "puoi sostituirlo con una tua stima prudente.",
+    )
+    if override_rend:
+        rend_override_val = st.sidebar.slider(
+            "Rendimento atteso portafoglio (%)", 1.0, 12.0, 6.0, 0.1) / 100
+else:
+    rend_medio_pac   = st.sidebar.slider("Rendimento medio atteso PAC (%)", 1.0, 12.0, 7.0, 0.1) / 100
+    vol_pac          = st.sidebar.slider("Volatilità PAC (%)", 5.0, 25.0, 15.0, 0.5) / 100
+
 ter_pac          = st.sidebar.number_input("TER PAC (%)", value=0.20, step=0.01) / 100
 tassa_uscita_pac = st.sidebar.slider("Tassazione Plusvalenze PAC (%)", 0, 26, 26)
 
@@ -399,6 +433,146 @@ def seleziona_traiettoria_per_percentile(rendimenti: np.ndarray, percentile: int
 
 
 # ---------------------------------------------------------------------------
+# PORTAFOGLIO A TICKER: download storico, stima parametri, Cholesky
+# ---------------------------------------------------------------------------
+def parse_ticker_pesi(tickers_str: str, pesi_str: str):
+    """Converte le stringhe input in liste pulite, valida e normalizza i pesi."""
+    tickers = [t.strip().upper() for t in tickers_str.split(",") if t.strip()]
+    pesi_raw = [p.strip() for p in pesi_str.split(",") if p.strip()]
+    if len(tickers) == 0:
+        raise ValueError("Inserisci almeno un ticker.")
+    if len(pesi_raw) != len(tickers):
+        raise ValueError(
+            f"Hai {len(tickers)} ticker ma {len(pesi_raw)} pesi: devono combaciare."
+        )
+    pesi = np.array([float(p) for p in pesi_raw])
+    if pesi.sum() <= 0:
+        raise ValueError("La somma dei pesi deve essere positiva.")
+    pesi = pesi / pesi.sum()   # normalizza a 1 anche se non sommano a 100
+    return tickers, pesi
+
+
+@st.cache_data(show_spinner=False)
+def scarica_prezzi_mensili(tickers: tuple, anni: int):
+    """
+    Scarica lo storico giornaliero da Yahoo Finance per ciascun ticker e lo
+    ricampiona a fine mese. Richiede connessione internet (yfinance).
+    Restituisce un DataFrame (colonne=ticker, righe=mesi) di prezzi Adj Close,
+    allineato sulle date comuni a tutti i ticker.
+    """
+    import yfinance as yf
+    from datetime import date
+    from dateutil.relativedelta import relativedelta
+
+    end = date.today()
+    start = end - relativedelta(years=anni)
+
+    serie = {}
+    for t in tickers:
+        data = yf.download(t, start=start.isoformat(), end=end.isoformat(),
+                            progress=False, auto_adjust=True)
+        if data is None or data.empty:
+            raise ValueError(f"Nessun dato scaricato per il ticker '{t}'. "
+                              f"Verifica che sia corretto su Yahoo Finance.")
+        col = "Close" if "Close" in data.columns else data.columns[0]
+        prezzi_mensili = data[col].resample("ME").last()
+        serie[t] = prezzi_mensili
+
+    df = pd.DataFrame(serie).dropna()
+    if len(df) < 24:
+        raise ValueError(
+            f"Storico comune troppo corto ({len(df)} mesi): riduci gli anni "
+            f"richiesti o verifica i ticker (potrebbero non sovrapporsi nel tempo)."
+        )
+    return df
+
+
+def stima_parametri_portafoglio(prezzi_df: pd.DataFrame, pesi: np.ndarray):
+    """
+    Da una matrice di prezzi mensili (colonne=ticker), calcola:
+    - rendimenti mensili semplici per ciascun asset
+    - rendimento medio annuo e volatilità annua per asset (dai rendimenti,
+      MAI dai prezzi: la correlazione sui prezzi è distorta dal trend comune)
+    - matrice di correlazione e di covarianza (annualizzate) tra i rendimenti
+    - rendimento e volatilità del portafoglio pesato
+
+    Ritorna un dizionario con tutti i pezzi, inclusa la matrice L di Cholesky
+    della covarianza (mensile) per generare shock correlati nella simulazione.
+    """
+    rend_mensili = prezzi_df.pct_change().dropna()   # rendimenti, non prezzi
+
+    media_mensile = rend_mensili.mean().values
+    cov_mensile = rend_mensili.cov().values
+    corr = rend_mensili.corr().values
+
+    rend_annuo_asset = (1 + media_mensile) ** 12 - 1
+    vol_annua_asset = rend_mensili.std().values * np.sqrt(12)
+
+    # Portafoglio: rendimento = media pesata, volatilità = da matrice covarianza
+    rend_portafoglio = float(np.dot(pesi, rend_annuo_asset))
+    vol_portafoglio = float(np.sqrt(pesi @ (cov_mensile * 12) @ pesi))
+
+    # Cholesky sulla covarianza mensile, per simulare shock mensili correlati
+    # Piccolo ridge per stabilità numerica se la matrice è quasi singolare
+    cov_reg = cov_mensile + np.eye(len(pesi)) * 1e-10
+    L = np.linalg.cholesky(cov_reg)
+
+    return {
+        "tickers": list(prezzi_df.columns),
+        "rend_annuo_asset": rend_annuo_asset,
+        "vol_annua_asset": vol_annua_asset,
+        "corr": corr,
+        "media_mensile": media_mensile,
+        "cholesky_mensile": L,
+        "rend_portafoglio": rend_portafoglio,
+        "vol_portafoglio": vol_portafoglio,
+        "n_mesi_storico": len(rend_mensili),
+        "prezzi_df": prezzi_df,
+    }
+
+
+@st.cache_data(show_spinner=False)
+def genera_rendimenti_portafoglio_gbm(media_mensile, cholesky_mensile, pesi,
+                                      durata_anni: int, rend_override=None,
+                                      n: int = 200, seed: int = 13):
+    """
+    Genera n traiettorie annue del PORTAFOGLIO (già pesato) usando shock
+    mensili correlati (Cholesky sulla covarianza storica), poi aggrega a
+    rendimento annuo e infine seleziona per percentile come per gli altri
+    motori GBM del simulatore.
+
+    Se rend_override è fornito, si ridimensiona il drift mensile in modo che
+    il rendimento medio annuo del portafoglio coincida con l'override, tenendo
+    fissi volatilità e correlazioni storiche (vedi nota nell'app).
+    """
+    rng = np.random.default_rng(seed)
+    n_asset = len(pesi)
+    mesi_tot = durata_anni * 12
+
+    drift = media_mensile.copy()
+    if rend_override is not None:
+        # Rendimento annuo attuale del portafoglio con questo drift
+        rend_attuale = float(np.dot(pesi, (1 + drift) ** 12 - 1))
+        # Scala il drift (in log-space approssimato) per centrare sull'override
+        fattore_corr = np.log(1 + rend_override) / np.log(1 + rend_attuale) \
+            if rend_attuale > -0.99 and rend_attuale != 0 else 1.0
+        drift = drift * fattore_corr
+
+    traiettorie_annue = np.zeros((n, durata_anni))
+    for s in range(n):
+        z = rng.standard_normal((mesi_tot, n_asset))
+        shock_mensili = z @ cholesky_mensile.T          # correlati
+        rend_mensili_asset = drift + shock_mensili       # (mesi_tot, n_asset)
+        rend_mensile_portafoglio = rend_mensili_asset @ pesi   # (mesi_tot,)
+        # Aggrega i 12 mesi di ciascun anno in un rendimento annuo composto
+        rmp = rend_mensile_portafoglio.reshape(durata_anni, 12)
+        rend_annuo = np.prod(1 + rmp, axis=1) - 1
+        traiettorie_annue[s] = rend_annuo
+
+    return traiettorie_annue
+
+
+# ---------------------------------------------------------------------------
 # MOTORE DI SIMULAZIONE DEL CAPITALE
 # ---------------------------------------------------------------------------
 def simula_capitale(fattori, rend_fondo_annui, params) -> pd.DataFrame:
@@ -531,11 +705,31 @@ ral = ral_manuale if ral_override else ral_auto
 coeff_totale = COEFF_LAVORATORE[tipo_lavoratore]
 scenari = genera_scenari(profilo_crescita, coeff_totale, crescita_base, n=1000)
 
-# Traiettorie GBM per fondo e PAC, selezione per percentile
+# Traiettorie GBM per fondo, selezione per percentile
 rend_fondo_mat = genera_rendimenti_gbm(rend_medio_fondo, vol_fondo, durata, n=200, seed=7)
-rend_pac_mat   = genera_rendimenti_gbm(rend_medio_pac,  vol_pac,   durata, n=200, seed=11)
 rend_fondo_sel = seleziona_traiettoria_per_percentile(rend_fondo_mat, percentile_perf)
-rend_pac_sel   = seleziona_traiettoria_per_percentile(rend_pac_mat,   percentile_perf)
+
+# --- PAC: modalità semplice (GBM parametrico) oppure portafoglio a ticker ---
+portafoglio_info = None
+errore_portafoglio = None
+if usa_portafoglio:
+    try:
+        tickers, pesi = parse_ticker_pesi(tickers_input, pesi_input)
+        prezzi_df = scarica_prezzi_mensili(tuple(tickers), anni_storico)
+        portafoglio_info = stima_parametri_portafoglio(prezzi_df, pesi)
+        rend_override_eff = rend_override_val if override_rend else None
+        rend_pac_mat = genera_rendimenti_portafoglio_gbm(
+            portafoglio_info["media_mensile"], portafoglio_info["cholesky_mensile"],
+            pesi, durata, rend_override=rend_override_eff, n=200, seed=13,
+        )
+    except Exception as e:
+        errore_portafoglio = str(e)
+        # Fallback: GBM parametrico semplice se il download/stima fallisce
+        rend_pac_mat = genera_rendimenti_gbm(0.07, 0.15, durata, n=200, seed=11)
+else:
+    rend_pac_mat = genera_rendimenti_gbm(rend_medio_pac, vol_pac, durata, n=200, seed=11)
+
+rend_pac_sel = seleziona_traiettoria_per_percentile(rend_pac_mat, percentile_perf)
 
 params = dict(
     ral=ral, base_contrib=base_contrib_iniziale,
@@ -737,6 +931,60 @@ m4.metric("Contributo azienda (gratis)/anno", f"€ {ca_anno1:,.0f}",
           help="Denaro aggiuntivo che non ti costa nulla")
 
 st.divider()
+
+# ---------------------------------------------------------------------------
+# SEZIONE PORTAFOGLIO A TICKER (se attivo)
+# ---------------------------------------------------------------------------
+if usa_portafoglio:
+    st.subheader("📈 Portafoglio PAC a Ticker")
+    if errore_portafoglio:
+        st.error(
+            f"Impossibile scaricare/stimare il portafoglio: {errore_portafoglio}  \n"
+            f"Uso un GBM di fallback (rend. 7%, vol. 15%) finché non correggi "
+            f"ticker/pesi o la connessione."
+        )
+    else:
+        pi = portafoglio_info
+        pc1, pc2, pc3 = st.columns(3)
+        pc1.metric("Rendimento storico annuo (composto)", f"{pi['rend_portafoglio']*100:.2f}%",
+                   help=f"Su {pi['n_mesi_storico']} mesi di storico. Media pesata dei "
+                        f"rendimenti annualizzati dei singoli asset.")
+        pc2.metric("Volatilità storica annua", f"{pi['vol_portafoglio']*100:.2f}%",
+                   help="Da matrice di covarianza dei rendimenti mensili, annualizzata")
+        pc3.metric("Asset nel portafoglio", f"{len(pi['tickers'])}")
+
+        if override_rend:
+            st.info(
+                f"Rendimento atteso **corretto a mano** a {rend_override_val*100:.1f}% "
+                f"(volatilità e correlazioni restano quelle storiche)."
+            )
+
+        # Tabella per singolo asset
+        df_asset = pd.DataFrame({
+            "Ticker": pi["tickers"],
+            "Peso (%)": (pesi * 100).round(1),
+            "Rend. annuo storico (%)": (pi["rend_annuo_asset"] * 100).round(2),
+            "Volatilità annua (%)": (pi["vol_annua_asset"] * 100).round(2),
+        })
+        st.dataframe(df_asset, use_container_width=True, hide_index=True)
+
+        # Matrice di correlazione (sui rendimenti, non sui prezzi)
+        with st.expander("🔗 Matrice di correlazione (sui rendimenti mensili)"):
+            df_corr = pd.DataFrame(pi["corr"], index=pi["tickers"], columns=pi["tickers"])
+            st.dataframe(df_corr.style.format("{:.2f}").background_gradient(
+                cmap="RdYlGn_r", vmin=-1, vmax=1), use_container_width=True)
+            st.caption(
+                "Calcolata sui rendimenti mensili (non sui prezzi, che darebbero "
+                "correlazioni gonfiate dal trend comune). Usata per generare shock "
+                "correlati via decomposizione di Cholesky nella simulazione."
+            )
+
+        st.caption(
+            "⚠️ Volatilità e correlazioni storiche sono stime ragionevoli del futuro; "
+            "il rendimento medio storico lo è molto meno (un decennio favorevole non "
+            "garantisce il prossimo). Valuta di correggerlo a mano con una stima prudente."
+        )
+    st.divider()
 
 
 # ---------------------------------------------------------------------------
