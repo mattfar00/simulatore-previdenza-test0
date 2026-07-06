@@ -218,6 +218,12 @@ capitale_iniziale_fondo = st.sidebar.number_input(
     help="Montante già accumulato se sei iscritto da tempo. Cresce con i "
          "rendimenti e viene tassato all'uscita in base agli anni di adesione.",
 )
+capitale_iniziale_pac = st.sidebar.number_input(
+    "Capitale già presente nel PAC (€)", min_value=0, value=0, step=1000,
+    help="Montante ETF già accumulato, se il PAC è già avviato da tempo. "
+         "Cresce con i rendimenti simulati; viene trattato come capitale già "
+         "versato ai fini del calcolo della plusvalenza tassata in uscita.",
+)
 
 st.sidebar.header("2. Profilo Lavoratore")
 eta = st.sidebar.number_input("Età attuale", min_value=18, max_value=67, value=30, step=1)
@@ -232,6 +238,41 @@ crescita_base = st.sidebar.slider(
     help="Adeguamento applicato ogni anno anche senza promozioni. In Italia "
          "l'inflazione media di lungo periodo + rinnovi contrattuali vale ~1,5–2,5%.",
 ) / 100
+
+st.sidebar.markdown("**Passaggi di livello (promozioni pianificate)**")
+usa_passaggi_livello = st.sidebar.checkbox(
+    "Pianifica cambi di livello/mansione durante la carriera", value=False,
+    help="Attiva per indicare TU in quali anni futuri passerai a un livello di "
+         "inquadramento superiore (es. da C1 a C2 all'anno 5). Il nuovo minimo "
+         "tabellare del livello sostituisce la base di partenza da quell'anno "
+         "in poi; sopra continua comunque ad applicarsi la crescita simulata "
+         "(scatti stocastici + inflazione).",
+)
+livelli_ccnl_lista = list(preset["livelli"].keys())
+passaggi_livello = []  # lista di (anno_da, livello)
+if usa_passaggi_livello:
+    n_passaggi = st.sidebar.number_input(
+        "Numero di passaggi di livello pianificati", min_value=1, max_value=10,
+        value=1, step=1, key="n_passaggi_livello",
+    )
+    for i in range(int(n_passaggi)):
+        pc1, pc2 = st.sidebar.columns([1, 2])
+        anno_da = pc1.number_input(
+            f"Anno #{i+1}", min_value=1, max_value=40, value=min(5 * (i + 1), 40),
+            step=1, key=f"anno_passaggio_{i}",
+        )
+        livello_nuovo = pc2.selectbox(
+            f"Nuovo livello #{i+1}", livelli_ccnl_lista,
+            index=min(i + 1, len(livelli_ccnl_lista) - 1),
+            key=f"livello_passaggio_{i}",
+        )
+        passaggi_livello.append((int(anno_da), livello_nuovo))
+    # Ordina per anno crescente, utile per applicarli in sequenza nel motore
+    passaggi_livello.sort(key=lambda x: x[0])
+    st.sidebar.caption(
+        " → ".join([f"Anno {a}: {liv}" for a, liv in passaggi_livello])
+        if passaggi_livello else ""
+    )
 
 st.sidebar.header("3. Fondo")
 comparto = st.sidebar.selectbox("Comparto d'investimento", list(preset["comparti"].keys()), index=2)
@@ -704,19 +745,30 @@ def simula_capitale(fattori, rend_fondo_annui, params) -> pd.DataFrame:
     anni_pregressi = params["anni_pregressi"]
     uscita_ord = params["uscita_ordinaria"]
     cap_iniziale_fondo = params.get("cap_iniziale_fondo", 0.0)
+    cap_iniziale_pac = params.get("cap_iniziale_pac", 0.0)
+    molt_livello_annuo = params.get("molt_livello_annuo", None)  # lista per anno, opzionale
 
     # Aliquota fondo sui rendimenti annuali (media pesata 20% / 12,5%)
     aliq_rend_fondo = 0.20 * (1 - quota_ts) + 0.125 * quota_ts
 
     cap_fondo = float(cap_iniziale_fondo)   # montante di partenza già accumulato
-    cap_pac = cap_tfr = versato_pac_cum = 0.0
+    cap_pac = float(cap_iniziale_pac)       # montante ETF di partenza già accumulato
+    # Il capitale PAC iniziale è considerato "già versato": non genera di per sé
+    # plusvalenza, solo i rendimenti maturati da qui in avanti la generano.
+    versato_pac_cum = float(cap_iniziale_pac)
+    cap_tfr = 0.0
     risparmio_irpef_cum = 0.0
     rows = []
 
     for a, f in enumerate(fattori):
         anno = a + 1
-        ral_curr = ral_base * f
-        base_contrib = base_contrib0 * f      # minimi+scatti, cresce come la RAL
+        # Moltiplicatore di livello pianificato (promozione manuale): si applica
+        # SOPRA la crescita stocastica di carriera (fattori), spostando l'intera
+        # base retributiva al nuovo livello dall'anno indicato in poi.
+        molt_liv = molt_livello_annuo[a] if molt_livello_annuo is not None else 1.0
+        f_eff = f * molt_liv
+        ral_curr = ral_base * f_eff
+        base_contrib = base_contrib0 * f_eff  # minimi+scatti, cresce come la RAL
 
         # Contributi:
         # - TFR sull'intera retribuzione utile (approssimata = RAL)
@@ -840,6 +892,24 @@ else:
 
 rend_pac_sel = seleziona_traiettoria_per_percentile(rend_pac_mat, percentile_perf)
 
+# --- Moltiplicatore di livello pianificato (promozioni manuali) ---
+# Per ogni anno di simulazione, calcola di quanto sale il minimo tabellare
+# rispetto al livello di partenza, in base ai passaggi che l'utente ha
+# indicato manualmente (es. anno 5 -> C2). Si applica MOLTIPLICATIVAMENTE
+# sopra la crescita stocastica di carriera (fattori), quindi i due effetti
+# si sommano invece di escludersi a vicenda.
+molt_livello_annuo = [1.0] * durata
+if usa_passaggi_livello and passaggi_livello:
+    livello_attivo = livello   # livello di partenza scelto in sidebar
+    for a in range(durata):
+        anno_corrente = a + 1
+        # applica l'ultimo passaggio il cui anno_da <= anno_corrente
+        for anno_da, liv_nuovo in passaggi_livello:
+            if anno_da <= anno_corrente:
+                livello_attivo = liv_nuovo
+        minimo_attivo = preset["livelli"][livello_attivo]
+        molt_livello_annuo[a] = minimo_attivo / minimo_mensile
+
 params = dict(
     ral=ral, base_contrib=base_contrib_iniziale,
     tfr_pct=preset["tfr_pct"], ca_pct=contrib_az_pct,
@@ -849,6 +919,8 @@ params = dict(
     tp=tassa_uscita_pac, rt=rend_tfr, tt=tassa_tfr,
     anni_pregressi=anni_gia_iscritto, uscita_ordinaria=uscita_ordinaria,
     cap_iniziale_fondo=capitale_iniziale_fondo,
+    cap_iniziale_pac=capitale_iniziale_pac,
+    molt_livello_annuo=molt_livello_annuo,
 )
 
 # Scenario di carriera mediano (P50) per la tabella principale
@@ -901,10 +973,22 @@ else:
                help="Voci individuali, non entrano nel calcolo del contributo azienda")
     rc4.metric("RAL totale", f"€ {ral:,.0f}")
 
+if usa_passaggi_livello and passaggi_livello:
+    st.caption(
+        "📈 **Passaggi di livello pianificati:** partenza da **" + livello + "** → "
+        + " → ".join([f"anno {a}: **{liv}**" for a, liv in passaggi_livello])
+        + ". Da ciascun anno indicato, il minimo tabellare del nuovo livello "
+          "sostituisce quello di partenza come base; sopra si applica comunque "
+          "la crescita simulata (scatti stocastici + inflazione)."
+    )
+
 cap_msg = ""
 if capitale_iniziale_fondo > 0:
-    cap_msg = (f" Nel fondo parti da un capitale già accumulato di "
-               f"**€ {capitale_iniziale_fondo:,.0f}**.")
+    cap_msg += (f" Nel fondo parti da un capitale già accumulato di "
+                f"**€ {capitale_iniziale_fondo:,.0f}**.")
+if capitale_iniziale_pac > 0:
+    cap_msg += (f" Nel PAC parti da un capitale già accumulato di "
+                f"**€ {capitale_iniziale_pac:,.0f}**.")
 
 st.caption(
     f"Il contributo aziendale al fondo ({contrib_az_pct*100:.2f}%) e il tuo minimo "
