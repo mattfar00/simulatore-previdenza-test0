@@ -2,8 +2,6 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
-import os
-import csv
 
 # ---------------------------------------------------------------------------
 # CONFIGURAZIONE PAGINA
@@ -100,67 +98,72 @@ CCNL_PRESET = {
 }
 
 # ---------------------------------------------------------------------------
-# STORICO RENDIMENTI DEI COMPARTI — caricato dai due CSV (cometa.csv e fonte.csv)
+# STORICO RENDIMENTI ANNUI NETTI PER COMPARTO  (branch bootstrap — DA RIEMPIRE)
 # ---------------------------------------------------------------------------
-@st.cache_data
-def carica_quote_storiche():
-    quote = {}
-    percorsi_trovati = []
+# ▸ Questo blocco alimenta la modalità "Bootstrap storico comparto".
+# ▸ IMPORTANTE: le liste qui sotto sono VUOTE di proposito. Vanno riempite con
+#   i rendimenti annui NETTI reali di ogni comparto (fonte: schede COVIP /
+#   relazioni annuali del fondo — es. Cometa "Crescita/Reddito/Sicurezza",
+#   Fon.Te "Dinamico/Bilanciato/Garantito"). Ogni valore è un rendimento annuo
+#   in forma decimale (0.084 = +8,4%; -0.052 = -5,2%).
+# ▸ Finché una lista resta vuota, la modalità bootstrap per quel comparto
+#   ricade automaticamente sul GBM parametrico e mostra un avviso in app.
+# ▸ NON sono stati inseriti numeri "di esempio": in uno strumento previdenziale
+#   inventare una serie storica falserebbe il resampling. Inseriscili tu (o
+#   chiedimi di recuperarli dalle schede COVIP).
+STORICO_ANNUALE = {
+    # Cometa — rendimenti annui NETTI per anno solare (Dic->Dic), calcolati
+    # dalle quote mensili ufficiali del fondo. Fonte quote: tabelle Cometa.
+    "Cometa": {
+        # Sicurezza 2020 (2021-2025). Serie CORTA: solo 5 anni -> bootstrap poco
+        # affidabile, l'app avvisa e resta comunque conservativa.
+        "Garantito":  [0.01581, -0.12295, 0.05902, 0.02797, 0.02603],
+        # Reddito (1999-2025)
+        "Bilanciato": [0.03902, 0.03904, 0.00233, -0.02273, 0.04047, 0.03907,
+                       0.06664, 0.02898, 0.02616, -0.03556, 0.07235, 0.03293,
+                       0.01661, 0.07830, 0.04283, 0.08318, 0.01910, 0.02543,
+                       0.02453, -0.03000, 0.06863, 0.01516, 0.03779, -0.10379,
+                       0.06054, 0.05524, 0.05114],
+        # Crescita (2006-2025)
+        "Azionario":  [0.04819, 0.00886, -0.15674, 0.13717, 0.04147, -0.00247,
+                       0.11428, 0.09616, 0.06918, 0.02237, 0.03715, 0.04845,
+                       -0.04701, 0.11287, 0.00416, 0.05201, -0.12292, 0.10671,
+                       0.10422, 0.07316],
+        # Monetario Plus (2006-2025)
+        "Monetario":  [0.02855, 0.02336, 0.02368, 0.02520, 0.00387, 0.01766,
+                       0.02960, 0.01260, 0.01028, 0.00471, 0.00172, -0.00289,
+                       -0.00552, 0.00395, 0.00511, -0.00309, -0.02902, 0.02904,
+                       0.03098, 0.02235],
+    },
+    # Fon.Te — rendimenti annui netti (Dic->Dic) dalle quote ufficiali.
+    "Fon.Te": {
+        "Conservativo": [0.03875, 0.01064, 0.00982, 0.05741, 0.02611, 0.03845, 0.01797, 0.01062, 0.00529, -0.00812, 0.016, 0.00254, -0.00499, -0.07594, 0.04032, 0.03074, 0.01812],
+        "Sviluppo": [0.02787, 0.02466, -0.01916, 0.07421, 0.03317, 0.05396, -0.10544, 0.06917, 0.05155, 0.04393],
+        "Dinamico": [0.17927, 0.05428, -0.01314, 0.10553, 0.10981, 0.11292, 0.05357, 0.03924, 0.06711, -0.0311, 0.12792, 0.05032, 0.1154, -0.11458, 0.10192, 0.08627, 0.07318],
+        "Crescita": [0.12131, 0.03909, -0.00205, 0.08736, 0.07985, 0.0938, 0.0345, 0.0396, 0.03596, -0.0113, 0.10538, 0.05295, 0.06857, -0.12082, 0.07888, 0.05727, 0.04688],
+    },
+}
 
-    # 1. Carica i dati di COMETA
-    path_cometa = os.path.join("data", "cometa.csv")
-    if not os.path.exists(path_cometa): path_cometa = "cometa.csv" # fallback
-    
-    if os.path.exists(path_cometa):
-        percorsi_trovati.append(path_cometa)
-        df_c = pd.read_csv(path_cometa)
-        for _, row in df_c.iterrows():
-            y, m = int(row['anno']), int(row['mese'])
-            for comp in ["Garantito", "Bilanciato", "Azionario", "Monetario"]:
-                if comp in df_c.columns and pd.notna(row[comp]):
-                    quote.setdefault(("Cometa", comp), {})[(y, m)] = float(row[comp])
-
-    # 2. Carica i dati di FON.TE
-    path_fonte = os.path.join("data", "fonte.csv")
-    if not os.path.exists(path_fonte): path_fonte = "fonte.csv" # fallback
-    
-    if os.path.exists(path_fonte):
-        percorsi_trovati.append(path_fonte)
-        df_f = pd.read_csv(path_fonte)
-        for _, row in df_f.iterrows():
-            y, m = int(row['anno']), int(row['mese'])
-            for comp in ["Conservativo", "Sviluppo", "Dinamico", "Crescita"]:
-                if comp in df_f.columns and pd.notna(row[comp]):
-                    quote.setdefault(("Fon.Te", comp), {})[(y, m)] = float(row[comp])
-
-    if not percorsi_trovati:
-        return {}, {}, None
-
-    # Trasforma le quote in rendimenti percentuali (mensili e annuali)
-    mensile, annuale = {}, {}
-    for (fondo, comp), serie in quote.items():
-        chiavi = sorted(serie)
-        rend_m = [round(serie[chiavi[i]] / serie[chiavi[i-1]] - 1, 6)
-                  for i in range(1, len(chiavi))]
-        mensile.setdefault(fondo, {})[comp] = rend_m
-
-        anni_dic = sorted({y for (y, m) in serie if m == 12})
-        rend_a = []
-        for y in anni_dic:
-            if (y, 12) in serie and (y - 1, 12) in serie:
-                rend_a.append(round(serie[(y, 12)] / serie[(y - 1, 12)] - 1, 5))
-        annuale.setdefault(fondo, {})[comp] = rend_a
-
-    return mensile, annuale, percorsi_trovati
-
-STORICO_MENSILE, STORICO_ANNUALE, _PERCORSI = carica_quote_storiche()
-
-if not _PERCORSI:
-    st.error(
-        "**File dati storici non trovati.** Assicurati che i file `cometa.csv` e "
-        "`fonte.csv` si trovino all'interno della cartella `data/` su GitHub."
-    )
-    st.stop()
+# ---------------------------------------------------------------------------
+# STORICO RENDIMENTI MENSILI per comparto (per il block-bootstrap mensile)
+# ---------------------------------------------------------------------------
+# Rendimenti mensili semplici (ordine cronologico crescente) calcolati dalle
+# quote ufficiali Cometa. Stessa fonte dello storico annuale: le due tabelle
+# sono coerenti per costruzione (l'annuale e' il composto dei 12 mesi).
+STORICO_MENSILE = {
+    "Cometa": {
+        "Garantito": [0.0073, 0.008141, 0.004136, 0.003432, 0.000293, 0.020518, 0.004978, -0.003334, -0.004588, 0.011619, -0.001424, 0.003327, 0.006063, 0.009323, 0.000467, -0.009326, -0.003577, 0.005574, 0.001785, -0.012567, -0.02004, -0.01289, -0.022288, -0.008636, -0.020259, 0.029053, -0.030242, -0.030667, 0.006947, 0.016453, -0.023392, 0.018606, -0.013332, 0.013831, 0.001784, 0.00199, -0.001986, 0.003143, 0.001044, -0.012101, 0.002746, 0.020114, 0.022401, -0.000303, -0.006262, 0.008233, -0.007964, 0.001931, 0.003245, 0.01486, 0.00259, 0.010432, -0.006391, 0.013953, -0.006344, 0.003438, 0.004992, -0.00711, 0.00981, 0.004371, 0.000484, 0.000773, 0.001932, 0.002603, 0.005962, 0.000669, -0.002102, 0.006318, 0.00761, -0.020959, 0.006557, 0.008527],
+        "Bilanciato": [0.003679, 0.004727, 0.007296, 0.002573, 0.005039, 0.004635, 0.001506, 0.001504, 0.001126, 0.002532, 0.002058, 0.00168, -0.000186, 0.025815, 0.00536, -0.000452, -0.008227, 0.000273, 0.004466, 0.011976, -0.008517, 0.00859, -0.012103, 0.011979, 0.00556, -0.015964, -0.003444, 0.010095, 0.004682, -0.003136, -0.001259, -0.008101, -0.00608, 0.012417, 0.004599, 0.003321, -0.004742, -0.00027, 0.004046, -0.003941, -0.005664, -0.010308, -0.008314, 0.004054, -0.011103, 0.01132, 0.007707, -0.005463, -0.007507, 0.000277, -0.00332, 0.013509, 0.006756, 0.006801, 0.001081, 0.005668, -0.000447, 0.006534, 0.000267, 0.010312, 0.007919, 0.007595, 0.001473, -0.000519, -0.001298, 0.004507, -0.000863, 0.00285, 0.001981, 0.004297, 0.006161, 0.004337, 0.004488, 0.00489, 0.001342, 0.00243, 0.012286, 0.011724, 0.003427, 0.005205, 0.006958, -0.012052, 0.012362, 0.011889, 0.00262, 0.004909, -0.004807, -0.004751, -0.010342, 0.000482, 0.00699, 0.012687, 0.008352, 0.008673, 0.003408, 0.000618, 0.002855, 0.002231, 0.001535, 0.007665, 0.002434, -0.004856, 0.002059, 0.00525, 0.001892, 0.008462, -0.002547, -0.001052, -0.007368, -0.000454, -0.010079, 0.007043, -0.002737, -0.019285, 0.006296, 0.01398, -0.018129, -0.019395, 0.00712, 0.00762, -0.009355, -0.010939, 0.008991, 0.018059, 0.001936, 0.006417, 0.022123, 0.014505, 0.010667, -0.006304, 0.011581, 0.00299, -0.002254, 0.004882, 0.015445, 0.002642, -0.003276, -0.0005, 0.012582, 0.007766, 0.002802, 0.002515, -0.015401, 0.005591, 0.002041, 0.005408, -0.004401, 0.008841, 0.005773, -0.003873, -0.002013, -0.002226, -0.001046, 0.001256, -0.014638, 0.021788, 0.0135, 0.012364, -0.000202, -0.00081, -0.000203, 0.00277, 0.014552, 0.008433, 0.007178, 0.003596, 0.009446, 0.005163, 0.003146, 0.002048, 0.005685, 0.016577, -0.003936, -0.01819, 0.014183, -0.005165, 0.009625, 0.015992, 0.00358, -0.000984, 0.008681, 0.011109, 0.006761, 0.006656, 0.010365, 0.006367, 0.002636, 0.01303, -0.000461, 0.001039, 0.011702, 0.002393, 0.017393, 0.010894, 0.007682, -0.006472, -0.004527, -0.017801, 0.016317, -0.016499, 0.002146, 0.016007, 0.005825, -0.011141, -0.000223, 0.001227, 0.009194, -0.001767, 0.00708, 0.007854, 0.009155, -0.000702, 0.000378, -0.010425, -0.008242, 0.011888, -0.008268, 0.005978, 0.001308, 0.004683, 0.003794, -0.003509, 0.00428, 0.003075, 0.002904, 0.008741, 0.001116, 0.000266, 0.003398, -0.010317, -0.002994, 0.003325, -0.004115, -0.000429, 0.006013, -0.001708, 0.000428, -0.01539, 0.001248, -0.009648, 0.015489, 0.005551, 0.009809, 0.005679, -0.006439, 0.015511, 0.006434, 0.006237, 0.002014, -0.000309, 0.003403, 0.003392, 0.007836, -0.015245, -0.04985, 0.017652, 0.008059, 0.00773, 0.010665, 0.005562, -0.003205, -0.004253, 0.024531, 0.007625, -0.001968, -0.002679, 0.008262, 0.007792, 0.003442, 0.007258, 0.007156, 0.004802, -0.010095, 0.00739, -0.002983, 0.008976, -0.018279, -0.014608, -0.002613, -0.023681, -0.004541, -0.024885, 0.024191, -0.019466, -0.0297, 0.006984, 0.01826, -0.01905, 0.021264, -0.013757, 0.013195, 0.002073, -0.001326, 0.004993, 0.005655, -0.003521, -0.015295, -0.007338, 0.029513, 0.024632, 0.003018, 0.002397, 0.013888, -0.013598, 0.009817, 0.009722, 0.01332, 0.004628, 0.009801, -0.008007, 0.019764, -0.010266, 0.010421, 0.002255, -0.019145, 0.00039, 0.01317, 0.008088, 0.006543, 0.004318, 0.011197, 0.013082, 0.000876, -0.000783, 0.009822, 0.012603, -0.030259, 0.024182, 0.019116],
+        "Azionario": [0.017384, 0.019141, 0.012736, 0.000637, 0.015113, -0.019041, 0.023964, 0.016616, 0.00706, 0.00861, 0.001133, -0.00332, -0.024606, 0.000466, 0.007371, 0.01679, 0.010453, 0.013268, 0.000888, 0.009683, 0.008858, -0.001234, 0.002252, 0.013048, 0.008587, -0.002696, -0.011596, 0.001008, 0.004745, 0.00551, -0.016155, -0.003111, -0.03367, -0.001652, -0.018353, 0.023293, 0.002845, -0.0448, -0.000469, 0.017127, -0.04521, -0.062248, 0, -0.002061, -0.014026, -0.028626, 0.016981, 0.048414, 0.014157, 0.004155, 0.036988, 0.016598, 0.019231, -0.012091, 0.013564, 0.016382, -0.014453, 0.008292, 0.033354, -0.002432, -0.020906, -0.012751, 0.013068, 0.006412, 0.014692, 0.007461, -0.009019, 0.01835, 0.00574, 0.010837, -0.008148, 0.013907, 0.003127, -0.008431, -0.005644, -0.022562, -0.007792, 0.016893, -0.011075, 0.011493, 0.0236, 0.020138, 0.002651, -0.002505, -0.018064, 0.016123, 0.013351, 0.014693, 0.009721, 0.005992, 0.011846, 0.011839, 0.016015, 0.000515, 0.00508, 0.021945, 0.006135, -0.025512, 0.024328, -0.006857, 0.017386, 0.023197, 0.007537, 0.003531, -0.002624, 0.018954, 0.002288, 0.005972, 0.012454, 0.005748, -0.002057, 0.015177, -0.00457, -0.002097, 0.018912, -0.000669, 0.019131, 0.01921, 0.006444, -0.002721, 0.001979, -0.023333, 0.020446, -0.027858, -0.00766, 0.027823, 0.005727, -0.015257, -0.014839, -0.00371, 0.015508, 0.002408, 0.008354, -0.006227, 0.018145, 0.004549, -0.000799, -0.006025, -0.000644, 0.020451, -0.003524, 0.012669, 0.004327, 0.00545, 0.007485, -0.004253, 0.004785, 0.002765, 0.006026, 0.010356, 0.0001, 0.001356, 0.009332, -0.019435, -0.005931, 0.008516, -0.002376, -0.000608, 0.012273, -0.002054, 0.001255, -0.027978, 0.002167, -0.022287, 0.025007, 0.013816, 0.012463, 0.011208, -0.010837, 0.021211, 0.006613, 0.006813, 0.004833, 0.002934, 0.006475, 0.007339, 0.005724, -0.028128, -0.066112, 0.030784, 0.009201, 0.006626, 0.013709, 0.007323, -0.006543, -0.007659, 0.032988, 0.010232, -0.003816, -0.00506, 0.01136, 0.012548, 0.004317, 0.01123, 0.008638, 0.006887, -0.01629, 0.011299, -0.00389, 0.014077, -0.022704, -0.018283, -0.000793, -0.030643, -0.002409, -0.032509, 0.030306, -0.023551, -0.039404, 0.011883, 0.031706, -0.030732, 0.033749, -0.014372, 0.015133, 0.004591, 0.002506, 0.019361, 0.012021, -0.009122, -0.020235, -0.014731, 0.046891, 0.028468, 0.007843, 0.016845, 0.020708, -0.018656, 0.01892, 0.017908, 0.009273, 0.007771, 0.011162, -0.008174, 0.028503, -0.011441, 0.017004, -0.00189, -0.03268, -0.007404, 0.025634, 0.014252, 0.014423, 0.004672, 0.018478, 0.018302, -0.000312, 0.001716, 0.011485, 0.012124, -0.036469, 0.044441, 0.028001],
+        "Monetario": [0.001421, 0.002587, 0.001998, 0.003822, 0.001655, 0.000496, 0.002312, 0.001483, 0.002633, 0.0032, 0.001309, 0.000899, 0.003101, 0.00122, 0.002275, 0.003973, 0.002342, 0.002014, 0.003377, 0.001843, 0.003279, 0.003109, 0.002702, 0.003091, 0.00324, 0.002678, -0.000393, -0.002593, 0.002285, 0.003931, -0.000392, 0.002193, 0.003517, -0.000312, -0.001325, 0.004291, 0.002564, -0.001395, 0.004268, 0.003631, 0.000385, -0.000308, 0.004157, 0.003986, 0.004887, 0.001596, 0.003565, 0.003024, 0.002487, 0.001955, 0.002776, 0.001048, 0.001794, 0.000373, 0.000671, 0.000745, 0.000596, 0.002084, 0.000743, -0.000371, 0.000223, 0.000148, 0.001781, 0.001111, -0.000962, 0.001259, -0.006659, 0.003948, 0.004006, 0.001773, 0.00177, 0.000515, 0.001987, 0.000514, -0.004184, 0.005455, -0.000367, -0.001174, -0.004479, 0.011802, 0.006999, 0.00695, -0.000935, -0.000648, -0.004249, 0.003833, 0.003746, 0.005742, 0.002212, 0.001923, 0.002558, 0.001134, 0.001629, 0, 0.001131, 0.003248, 0, -0.002111, 0.00268, 0.000563, 0.001195, 0.00323, 0.0014, -0.000419, 0.002517, 0.001325, 0.000557, 0.000348, 0.001183, 0.001877, 0.000902, 0.00104, 0.000277, -0.001315, 0.001317, 0.000208, 0.001453, 0.001313, 0.00069, 0, 0.000414, -0.001724, 0.001796, -0.000138, 0.000138, 0.000483, 0.000551, -0.000275, 0.000138, 0, 0, 0.000276, 0.000482, 0.000275, -0.000344, 0.000275, -6.9e-05, -0.001239, -0.001171, 0.003104, -0.001513, -0.000413, -0.000965, 0.000483, 0.000207, -0.000689, 0.000828, 0.000207, -0.000344, 0.000551, -0.000413, -0.000827, -0.001104, -6.9e-05, -0.000138, -0.000276, -0.005872, 0.00132, 0.000347, -0.002012, 0.000834, 6.9e-05, 0.000139, 0.00125, 0.001318, 0, 0.001593, 0.000138, -0.000138, 0.001176, 0.00076, 0.001104, -0.000689, -0.00069, -0.000552, -6.9e-05, 0.001174, -0.000345, -0.007178, 0.002086, 0.002081, 0.0027, 0.001726, 0.000551, 0.000689, 0.001033, 0.000756, -0.000137, -0.000275, -0.0011, 0.000688, -0.000344, -6.9e-05, 6.9e-05, 0.000757, -0.000412, -0.000619, -0.00172, 0.000207, -0.000276, -0.001792, -0.004075, -0.003121, -0.003478, -0.001536, -0.004405, 0.004284, -0.006363, -0.007178, 0.000284, 0.00163, -0.003608, 0.003692, -0.003962, 0.006179, 0.001412, 0.000987, -0.00169, 0.003456, 0.002882, 0.000701, 0.003292, 0.005236, 0.006528, 0.001794, -0.000964, 0.003378, 6.9e-05, 0.002611, 0.003426, 0.005805, 0.003327, 0.005143, -0.000135, 0.00505, 0.001072, 0.002409, 0.003071, 0.000932, 0.003923, 0.001325, 0.001521, 0.001387, 0.001781, 0.001317, 0.00263, 0.001049, 0.000786, 0.002422, 0.002612, -0.006253, 0.002622, 0.003007],
+    },
+    "Fon.Te": {
+        "Conservativo": [0.006033, -0.004474, -0.00306, -0.007577, -0.003769, 0.005918, 0.006847, 0.007854, 0.012355, 0.009294, 0.001023, 0.004274, 0.006292, 0.005793, 0.002834, 0.001003, 0.000455, 0.005553, 0.003711, 0.003157, -0.001528, 0.002071, 0.004493, 0.000537, 0.003755, 0.004899, 0.000443, -0.001861, -0.001598, 0.000622, 0.00462, -0.002388, 0.000355, -0.00514, 0.006414, 0.001682, 0.002386, -0.001587, 0.002119, 0.002115, -0.000615, -0.005806, 0.004778, -0.004491, 0.002477, -0.014208, 0.021305, 0.012446, 0.009869, 0.000943, -0.001285, -0.003259, 0.003269, 0.007804, 0.007658, 0.005236, 0.003444, 0.007451, 0.002493, -0.000249, 0.000663, 0.002651, 0.010578, -0.00139, -0.008271, 0.007266, -0.000328, 0.00369, 0.00817, 0.004781, -0.001613, 0.005574, 0.00482, 0.003598, 0.00239, 0.00453, 0.005063, 0.00244, 0.004005, 0.002425, -0.001873, 0.003518, 0.001324, 0.004356, 0.006816, 0.002077, -0.001228, -0.000307, -0.007996, 0.008448, -0.006072, 0.002861, 0.009099, 0.004203, -0.004261, 0.001987, 0.000305, 0.00305, -0.001444, 0.002969, 0.001063, 0.002426, 0.001134, -0.000302, -0.004912, -0.003265, 0.007619, -0.005142, 0.002128, 0.000607, 0.001668, 0.00174, -0.000302, 0.001587, 0.000453, 0.00098, 0.00339, 0.000901, -0.0027, 0.000451, -0.000677, 0.001881, 0.001427, -0.017996, 0.005727, 0, -0.00782, 0.00352, -0.001373, 0.00504, 0.001899, 0.004626, -7.5e-05, 0.003095, 0.001731, -0.002629, 0.004896, 0.003373, 0.001195, 0.000448, -0.000746, -7.5e-05, 7.5e-05, 0.003284, -0.00372, -0.007766, 0.001355, 0.001278, 0.001801, 0.001124, -0.00015, 0.001422, 0.000598, 0.002614, 0.000745, -0.002308, -0.005, 0.002925, -0.001795, -7.5e-05, 0.002547, 0.005679, -0.001115, -0.004017, -0.003212, 0.003896, -0.002463, -0.006659, -0.008436, -0.006305, -0.012537, -0.006813, -0.008652, 0.01376, -0.023268, -0.01882, 0.004451, 0.007977, -0.01279, 0.009393, -0.007621, 0.009053, 0.001522, 0.00272, -0.002234, 0.004557, 0.00183, -0.006594, 0.003279, 0.011478, 0.012451, 0.001245, -0.002799, 0.005613, -0.003333, 0.002178, 0.004346, 0.008114, 0.00253, 0.006958, -0.001974, 0.009814, -0.00226, 0.003096, 0.001506, -0.004134, 0.004227, 0.003758, 0.001348, 0.001346, 0, 0.00224, 0.006855, 0.00037, -0.002589, 0.006304, 0.005896, -0.013115, 0.008687, 0.007066],
+        "Sviluppo": [0.000341, -0.016694, 0.015072, -0.019741, -0.002263, 0.019544, 0.007417, -0.012346, -0.008028, -0.002197, 0.008284, 0.001149, 0.007174, 0.003305, 0.01062, 0.002416, 0.000112, -0.007175, -0.000395, 0.012482, -0.0053, 0.01116, 0.002385, 0.002988, 0.001655, -0.00336, 0.001382, 0.001435, 0.004739, 0.009379, -0.001304, -0.000653, 0.001905, -0.005597, -0.00306, 0.005481, -0.003543, -0.000328, 0.006239, -0.00174, 0.002016, -0.013267, 0.003141, -0.010382, 0.014321, 0.005308, 0.010887, 0.005708, -0.005943, 0.015297, 0.008541, 0.005944, 0.004392, -0.001614, 0.00803, 0.001138, 0.009973, -0.012688, -0.046637, 0.02647, 0.009425, 0.013009, 0.005178, 0.006749, -0.001023, -0.008503, 0.02764, 0.005228, -0.0018, -0.003257, 0.015482, 0.001634, 0.005881, 0.009187, 0.008763, 0.006756, -0.010402, 0.009397, 0.000528, 0.010792, -0.017367, -0.018495, -0.00615, -0.018911, -0.006156, -0.022847, 0.029201, -0.025192, -0.033042, 0.011837, 0.021596, -0.023212, 0.020953, -0.011223, 0.013347, 0.003733, 0.002583, 0.003195, 0.006164, -0.002808, -0.010853, -0.006625, 0.026988, 0.022524, 0.007144, -0.000837, 0.013114, -0.011923, 0.007732, 0.011143, 0.010005, 0.003972, 0.007102, -0.007147, 0.017352, -0.006841, 0.011748, 0.006016, -0.013721, 0.000846, 0.011881, 0.004316, 0.003882, 0.002762, 0.007207, 0.008249, 0.001266, -0.001129, 0.002576, 0.014696, -0.025057, 0.013397, 0.014434],
+        "Dinamico": [0, 0, 0.0032, -0.008373, -0.053981, -0.026458, -0.024667, -0.014212, -0.027585, 0.022648, 0.05274, 0.01388, -0.002139, 0.054662, 0.016362, 0.014799, -0.01074, 0.014044, 0.035065, -0.013285, 0.015195, 0.038367, -0.003741, -0.016026, -0.006608, 0.013584, -0.001294, 0.002869, 0.005999, 0.002936, 0.01619, 0.00405, 0.010937, -0.022612, 0.008619, 0.003958, -0.009049, -0.011121, -0.037579, -0.015105, 0.032603, -0.002055, 0.026303, 0.026268, 0.017241, 0.00463, -0.005479, -0.019675, 0.015699, 0.026082, 0.002996, 0.008362, -0.000338, 0.013883, 0.012023, 0.01386, 0.011962, 0.016806, 0.019296, 0.001319, -0.025957, 0.02283, -0.011277, 0.021474, 0.026105, 0.009231, 0.000297, -0.011151, 0.020223, 0.000442, 0.002431, 0.021014, 0.002447, -0.002872, 0.02347, 0.008652, 0.008299, 0.021926, 0.013266, 0.025984, 0.039193, 0.017667, -0.009973, 0.01113, -0.022938, 0.0107, -0.033815, -0.017467, 0.041328, 0.016442, -0.022436, -0.031129, -0.011386, 0.013238, 0.006141, 0.011427, 0.002953, 0.025602, 0.002434, 0.000498, -0.0084, 0.00753, 0.020927, -0.002135, 0.022804, 0.005619, 0.005171, 0.002129, -0.004367, 0.001541, 0.00213, 0.012814, 0.016616, 0.000975, 0.002177, 0.014464, -0.01685, -0.012954, 0.01446, 0.002118, -0.002056, 0.018661, 0.000337, 0.004662, -0.02941, 0.008814, -0.032206, 0.028204, 0.015437, 0.016445, 0.014789, -0.018573, 0.029699, 0.013337, 0.000482, 0.01385, -0.008017, 0.010741, 0.005629, 0.007219, -0.029968, -0.061145, 0.04876, 0.011637, 0.015588, 0.004287, 0.017233, -0.005129, -0.017549, 0.05274, 0.010926, 5e-05, 0.001893, 0.03256, 0.005392, 0.007518, 0.013117, 0.010555, 0.012487, -0.018798, 0.026915, -0.003322, 0.022416, -0.023889, -0.019213, 0.007416, -0.02676, -0.010513, -0.031731, 0.037885, -0.031144, -0.041033, 0.026878, 0.031089, -0.035695, 0.02693, -0.013259, 0.019012, 0.004835, 0.006464, 0.012701, 0.010348, -0.007552, -0.014648, -0.010667, 0.037955, 0.026979, 0.014325, 0.008167, 0.020453, -0.01592, 0.010206, 0.021397, 0.006004, 0.004379, 0.00684, -0.006623, 0.023422, -0.00877, 0.022751, 0.002842, -0.025099, -0.004466, 0.026453, 0.007999, 0.008918, 0.001662, 0.015179, 0.014234, -0.001848, 0.00323, 0.003376, 0.021676, -0.041743, 0.028655, 0.025992],
+        "Crescita": [0, 0.019, 0.002944, -0.002838, -0.03297, -0.01106, -0.012108, -0.009659, -0.022653, 0.014487, 0.035752, 0.006944, 0.00071, 0.039526, 0.014039, 0.011441, -0.007129, 0.01034, 0.023027, -0.007503, 0.011946, 0.027575, -0.00377, -0.00964, -0.00473, 0.009597, 0.002082, 0.000542, 0.003431, -0.00198, 0.011451, 0.002229, 0.006938, -0.01484, 0.006097, 0.004189, -0.006479, -0.008933, -0.019558, -0.010204, 0.019318, -0.006014, 0.026217, 0.021259, 0.015132, 0.002671, -0.004211, -0.013548, 0.009973, 0.020875, 0.003733, 0.007101, 0.000588, 0.011744, 0.009286, 0.008872, 0.008631, 0.01219, 0.017307, -0.000549, -0.020082, 0.016891, -0.00803, 0.015475, 0.020397, 0.007276, -0.000532, -0.004488, 0.014978, 0.002183, 0.002254, 0.017015, 0.002874, -0.001102, 0.01854, 0.003756, 0.006045, 0.017167, 0.011111, 0.021769, 0.024709, 0.013086, -0.009704, 0.002913, -0.019608, 0.010707, -0.021121, -0.009529, 0.027281, 0.011773, -0.016595, -0.013177, -0.007358, 0.010226, 0.001291, 0.010992, 0.00906, 0.018025, 0.001829, -0.000261, -0.008545, 0.002632, 0.014699, -0.00582, 0.018864, 0.002171, 0.003122, 0.000826, -0.00533, -0.000191, 0.002935, 0.006044, 0.011067, 0.000876, 0.001062, 0.005993, -0.007881, -0.005567, 0.009057, 0.003054, -0.000311, 0.009697, 0.0008, 0.001538, -0.015601, 0.006177, -0.017859, 0.018879, 0.0088, 0.015541, 0.008045, -0.006961, 0.01982, 0.013035, 0.008247, 0.008354, -0.0042, 0.009128, 0.00229, 0.016279, -0.019278, -0.047109, 0.037349, 0.009334, 0.013556, 0.006744, 0.009457, -0.001673, -0.012345, 0.034557, 0.007763, -0.001356, -0.007116, 0.021064, 0.004983, 0.006131, 0.010916, 0.011323, 0.008086, -0.01743, 0.018367, 0.000103, 0.012074, -0.019241, -0.016305, -0.002, -0.022567, -0.011544, -0.025213, 0.035998, -0.031937, -0.038629, 0.015794, 0.024294, -0.03354, 0.022809, -0.013606, 0.017571, 0.003319, 0.003924, 0.005082, 0.005611, -0.004641, -0.012655, -0.007421, 0.030811, 0.026593, 0.007011, -0.000159, 0.014884, -0.014875, 0.007603, 0.015778, 0.009558, 0.003293, 0.008975, -0.007828, 0.021005, -0.008781, 0.015541, 0.003041, -0.022662, -0.001475, 0.018129, 0.004802, 0.006421, -0.000346, 0.011776, 0.012128, -0.000531, -0.00029, 0.003675, 0.019223, -0.032616, 0.019448, 0.018262],
+    },
+}
 
 def annuale_disponibile(fondo: str, comparto: str, min_anni: int = 5) -> bool:
     serie = STORICO_ANNUALE.get(fondo, {}).get(comparto, [])
@@ -252,8 +255,13 @@ def classifica_ticker(ticker: str):
         return "ok", "accumulazione UCITS (da catalogo curato)"
     if t in ETF_FLAG:
         return "warn", ETF_FLAG[t]
-    return "sconosciuto", ("non in whitelist: verifica sul KID che sia ad "
-                           "accumulazione e UCITS prima di usarlo")
+    return "sconosciuto", ("non in whitelist: può essere un ETF non catalogato "
+                           "o un'AZIONE SINGOLA. Le azioni singole sono ammesse "
+                           "ma hanno volatilità molto più alta di un ETF "
+                           "diversificato e possono compromettere l'analisi "
+                           "(la stima storica di rendimento/rischio su un solo "
+                           "titolo è poco affidabile). Se è un ETF, verifica "
+                           "sul KID che sia ad accumulazione e UCITS.")
 
 # ---------------------------------------------------------------------------
 # SIDEBAR
@@ -481,7 +489,9 @@ if usa_portafoglio:
 
     tickers_manuali_str = st.sidebar.text_input(
         "Aggiungi ticker manuale (separati da virgola, opzionale)", value="",
-        help="Per ETF non presenti nel catalogo. Verifica che siano ad accumulo UCITS.",
+        help="Per ETF non in catalogo o AZIONI SINGOLE (es. AAPL, ENI.MI). "
+             "Le azioni sono ammesse ma molto più volatili di un ETF: l'app "
+             "ti avviserà. Per gli ETF verifica che siano ad accumulo UCITS.",
     )
     tickers_manuali = [t.strip().upper() for t in tickers_manuali_str.split(",") if t.strip()]
 
@@ -651,40 +661,49 @@ def genera_scenari(profilo: str, coeff: float, crescita_base: float,
 
 
 # ---------------------------------------------------------------------------
-# GENERAZIONE TRAIETTORIE DI RENDIMENTO (GBM)
+# GENERAZIONE TRAIETTORIE DI RENDIMENTO — TUTTE MENSILI (n x durata*12)
 # ---------------------------------------------------------------------------
+# Il motore del montante ora lavora MESE PER MESE: i versamenti vengono
+# spalmati su 12 rate e ogni rata rende solo per i mesi residui. Tutti i
+# generatori quindi restituiscono matrici di rendimenti MENSILI.
+
 @st.cache_data
 def genera_rendimenti_gbm(rend_medio: float, vol: float, durata: int,
                           n: int = 200, seed: int = 7):
+    """
+    GBM lognormale MENSILE. `rend_medio` e `vol` restano parametri ANNUI
+    (come esposti in sidebar); vengono convertiti in parametri mensili
+    (media geometrica mensile, vol/sqrt(12)). Ritorna (n x durata*12).
+    """
     rng = np.random.default_rng(seed)
-    sigma = np.sqrt(np.log(1 + (vol**2) / ((1 + rend_medio)**2)))
-    mu = np.log(1 + rend_medio) - 0.5 * sigma**2
-    shocks = rng.normal(mu, sigma, size=(n, durata))
-    rendimenti = np.exp(shocks) - 1.0
-    return rendimenti
+    rend_m = (1 + rend_medio) ** (1 / 12) - 1
+    vol_m = vol / np.sqrt(12)
+    sigma = np.sqrt(np.log(1 + (vol_m**2) / ((1 + rend_m)**2)))
+    mu = np.log(1 + rend_m) - 0.5 * sigma**2
+    shocks = rng.normal(mu, sigma, size=(n, durata * 12))
+    return np.exp(shocks) - 1.0
 
 
 # ---------------------------------------------------------------------------
-# BRANCH SPERIMENTALE: BOOTSTRAP STORICO DEI RENDIMENTI DI COMPARTO
+# BRANCH: BOOTSTRAP STORICO DEI RENDIMENTI DI COMPARTO
 # ---------------------------------------------------------------------------
 @st.cache_data
 def genera_rendimenti_bootstrap(serie_storica: tuple, durata: int,
                                 n: int = 200, seed: int = 21):
     """
-    Ricampiona (bootstrap iid, con reinserimento) i rendimenti annui storici
-    REALI del comparto per costruire n traiettorie lunghe `durata`. A differenza
-    del GBM non assume una distribuzione: usa direttamente la distribuzione
-    empirica degli anni osservati (code, asimmetrie e crash inclusi).
-
-    `serie_storica` è una tupla di rendimenti annui in forma decimale.
-    Ritorna una matrice (n x durata). Solleva ValueError se la serie è vuota.
+    Bootstrap iid sui rendimenti ANNUI storici reali del comparto. Ogni anno
+    ricampionato viene poi spalmato in 12 rendimenti mensili equivalenti
+    ((1+r)^(1/12)-1), così il motore mensile può usarlo direttamente.
+    Ritorna (n x durata*12).
     """
     serie = np.array(serie_storica, dtype=float)
     if serie.size == 0:
         raise ValueError("Serie storica del comparto vuota.")
     rng = np.random.default_rng(seed)
     idx = rng.integers(0, serie.size, size=(n, durata))
-    return serie[idx]
+    annui = serie[idx]                              # (n, durata)
+    mensili = (1 + annui) ** (1 / 12) - 1           # (n, durata)
+    return np.repeat(mensili, 12, axis=1)           # (n, durata*12)
 
 
 @st.cache_data
@@ -693,14 +712,11 @@ def genera_rendimenti_block_bootstrap(serie_mensile: tuple, durata: int,
     """
     BLOCK-BOOTSTRAP MENSILE. Ricampiona blocchi CONTIGUI di `block` mesi dai
     rendimenti mensili storici reali del comparto (bootstrap circolare, con
-    wrap-around), li concatena fino a coprire `durata` anni, poi compone ogni
-    finestra di 12 mesi in un rendimento annuo.
+    wrap-around) e li concatena fino a coprire `durata` anni.
 
     Rispetto al bootstrap annuale iid, preserva la struttura temporale interna
     (autocorrelazione, sequenze di mesi buoni/cattivi) e sfrutta MOLTE più
-    osservazioni: es. un comparto con 5 soli anni ma 72 mesi diventa utilizzabile.
-
-    Ritorna una matrice (n x durata) di rendimenti annui.
+    osservazioni. Ritorna direttamente i rendimenti MENSILI (n x durata*12).
     """
     serie = np.array(serie_mensile, dtype=float)
     m = serie.size
@@ -708,13 +724,20 @@ def genera_rendimenti_block_bootstrap(serie_mensile: tuple, durata: int,
         raise ValueError(f"Servono almeno {block} mesi, disponibili {m}.")
     rng = np.random.default_rng(seed)
     mesi_tot = durata * 12
-    out = np.empty((n, durata))
+    out = np.empty((n, mesi_tot))
     n_blocchi = int(np.ceil(mesi_tot / block))
     for s in range(n):
         start = rng.integers(0, m, size=n_blocchi)
         path = np.concatenate([serie[(st + np.arange(block)) % m] for st in start])[:mesi_tot]
-        out[s] = np.prod(1 + path.reshape(durata, 12), axis=1) - 1
+        out[s] = path
     return out
+
+
+def mensili_ad_annui(mat_mensile: np.ndarray) -> np.ndarray:
+    """Compone una matrice di rendimenti mensili (n x anni*12) in annui (n x anni)."""
+    n, mesi = mat_mensile.shape
+    anni = mesi // 12
+    return np.prod(1 + mat_mensile[:, :anni * 12].reshape(n, anni, 12), axis=2) - 1
 
 
 def rendimento_netto_comparto(r, ter, quota_ts):
@@ -768,9 +791,7 @@ def scarica_prezzi_mensili(tickers: tuple, anni: int):
                            progress=False, auto_adjust=False, actions=False)
         if data is None or data.empty:
             raise ValueError(f"Nessun dato scaricato per '{t}'. Verifica il ticker su Yahoo.")
-        if "Adj Close" in data.columns:
-            col_data = data["Adj Close"]
-        elif "Close" in data.columns:
+        if "Close" in data.columns:
             col_data = data["Close"]
         else:
             col_data = data.iloc[:, 0]
@@ -816,26 +837,30 @@ def stima_parametri_portafoglio(prezzi_df: pd.DataFrame, pesi: np.ndarray):
 def genera_rendimenti_portafoglio_gbm(media_mensile, cholesky_mensile, pesi,
                                       durata_anni: int, rend_override=None,
                                       n: int = 200, seed: int = 13):
+    """
+    Traiettorie MENSILI del portafoglio (n x durata*12) con shock correlati
+    (Cholesky). Se rend_override è dato, il drift viene TRASLATO (non scalato)
+    di una costante uguale per tutti gli asset, così da centrare il rendimento
+    atteso del portafoglio sull'override senza mai invertire il segno dei
+    singoli asset (bug del vecchio approccio moltiplicativo quando lo storico
+    era negativo).
+    """
     rng = np.random.default_rng(seed)
     n_asset = len(pesi)
     mesi_tot = durata_anni * 12
     drift = media_mensile.copy()
     if rend_override is not None:
-        rend_attuale = float(np.dot(pesi, (1 + drift) ** 12 - 1))
-        fattore_corr = np.log(1 + rend_override) / np.log(1 + rend_attuale) \
-            if rend_attuale > -0.99 and rend_attuale != 0 else 1.0
-        drift = drift * fattore_corr
+        target_m = (1 + rend_override) ** (1 / 12) - 1        # drift mensile obiettivo (portafoglio)
+        attuale_m = float(np.dot(pesi, drift))                 # drift mensile attuale (portafoglio)
+        drift = drift + (target_m - attuale_m)                 # shift additivo uniforme
 
-    traiettorie_annue = np.zeros((n, durata_anni))
+    traiettorie = np.zeros((n, mesi_tot))
     for s in range(n):
         z = rng.standard_normal((mesi_tot, n_asset))
         shock_mensili = z @ cholesky_mensile.T
         rend_mensili_asset = drift + shock_mensili
-        rend_mensile_portafoglio = rend_mensili_asset @ pesi
-        rmp = rend_mensile_portafoglio.reshape(durata_anni, 12)
-        rend_annuo = np.prod(1 + rmp, axis=1) - 1
-        traiettorie_annue[s] = rend_annuo
-    return traiettorie_annue
+        traiettorie[s] = rend_mensili_asset @ pesi
+    return traiettorie
 
 
 # ---------------------------------------------------------------------------
@@ -863,12 +888,14 @@ def costruisci_schedule(durata, ccnl_start, livello_start, comparto_start,
     for a in range(durata):
         anno = a + 1
         ccnl_att, liv_att, comp_att = ccnl_start, livello_start, comparto_start
+        anno_ultimo_cambio_ccnl = 0   # 0 = nessun cambio (si parte dal CCNL iniziale)
         for anno_da, tipo, payload in eventi:
             if anno_da <= anno:
                 if tipo == "livello":
                     liv_att = payload
                 else:
                     ccnl_att, liv_att, comp_att = payload
+                    anno_ultimo_cambio_ccnl = anno_da
         preset_a = CCNL_PRESET[ccnl_att]
         # comparto di ripiego se il nome non esiste nel nuovo fondo
         if comp_att not in preset_a["comparti"]:
@@ -892,14 +919,28 @@ def costruisci_schedule(durata, ccnl_start, livello_start, comparto_start,
         ter_f_a, rend_a, vol_a, quota_ts_a = preset_a["comparti"][comp_att]
         costo_fisso_a = preset_a["costo_fisso"]
 
-        # base contributiva teorica = minimo + scatti maturati, rivalutata
-        anni_servizio = anni_pregressi_scatti * freq_a + anno
+        # --- SCATTI DI ANZIANITÀ ---
+        # Regola: gli scatti maturano nel rapporto di lavoro corrente. Un
+        # CAMBIO DI CCNL (cambio azienda/settore) azzera l'anzianità: gli
+        # scatti pregressi e quelli maturati prima del cambio SI PERDONO e si
+        # ricomincia a maturare da zero nel nuovo contratto. I passaggi di
+        # LIVELLO (promozione interna) invece NON azzerano nulla.
+        # Il totale è sempre limitato a scatti_max del CCNL corrente: se parti
+        # con 2 pregressi su max 5, potrai maturarne al più altri 3.
+        if anno_ultimo_cambio_ccnl == 0:
+            # nessun cambio: pregressi + anzianità simulata
+            anni_servizio = anni_pregressi_scatti * freq_a + anno
+        else:
+            # anzianità solo dall'anno del cambio in poi (pregressi persi)
+            anni_servizio = anno - anno_ultimo_cambio_ccnl + 1
         scatti_maturati = min(max_a, anni_servizio // freq_a)
         base_teorica = minimo_annuo_a + scatti_maturati * scatto_annuo_a
         base_contrib_a = base_teorica * ((1 + crescita_base) ** a)
 
-        # base RAL (anno 1 equivalente del segmento), scalata poi dalla carriera
-        ral_base_eff_a = (minimo_annuo_a + anni_pregressi_scatti * scatto_annuo_a
+        # base RAL (anno 1 equivalente del segmento), scalata poi dalla carriera.
+        # Dopo un cambio CCNL gli scatti pregressi spariscono anche dalla RAL.
+        scatti_in_ral = anni_pregressi_scatti if anno_ultimo_cambio_ccnl == 0 else 0
+        ral_base_eff_a = (minimo_annuo_a + scatti_in_ral * scatto_annuo_a
                           + superminimo_annuo + premio_annuo)
 
         occupato = anno not in anni_disoccupato
@@ -914,6 +955,7 @@ def costruisci_schedule(durata, ccnl_start, livello_start, comparto_start,
             "rend_medio": rend_a, "vol": vol_a,
             "base_contrib": base_contrib_a if occupato else 0.0,
             "ral_base_eff": ral_base_eff_a,
+            "scatti": scatti_maturati,
             "occupato": occupato,
         })
     return sched
@@ -922,12 +964,14 @@ def costruisci_schedule(durata, ccnl_start, livello_start, comparto_start,
 # ---------------------------------------------------------------------------
 # MOTORE DI SIMULAZIONE DEL CAPITALE (schedule-driven)
 # ---------------------------------------------------------------------------
-def simula_capitale(fattori, rend_fondo_annui, rend_pac_annui, sched, scal) -> pd.DataFrame:
+def simula_capitale(fattori, rend_fondo_mensili, rend_pac_mensili, sched, scal) -> pd.DataFrame:
     """
-    Simula anno per anno fondo, PAC e TFR usando lo schedule (che incapsula
-    livello/CCNL/comparto/disoccupazione anno per anno). `rend_fondo_annui` e
-    `rend_pac_annui` sono due traiettorie annue (già coerenti con lo schedule
-    dei comparti per il fondo).
+    Simula il montante MESE PER MESE. `rend_fondo_mensili` e `rend_pac_mensili`
+    sono traiettorie di rendimenti mensili lunghe durata*12 (già coerenti con
+    lo schedule dei comparti per il fondo). I versamenti annui vengono divisi
+    in 12 rate: ogni rata rende solo per i mesi residui — coerente con un PAC
+    e con i contributi mensili reali al fondo (fix della sovrastima da
+    versamento "tutto a gennaio").
     """
     ral_override = scal["ral_override"]
     ral_manuale = scal["ral_manuale"]
@@ -960,6 +1004,7 @@ def simula_capitale(fattori, rend_fondo_annui, rend_pac_annui, sched, scal) -> p
         base_contrib = s["base_contrib"]  # già 0 se disoccupato
         aliq_rend_fondo = 0.20 * (1 - s["quota_ts"]) + 0.125 * s["quota_ts"]
 
+        # Importi ANNUI (per la tabella e l'IRPEF)
         tfr_curr = ral_curr * s["tfr_pct"] if occupato else 0.0
         ca_curr = base_contrib * s["ca_pct"]
         vol_min = base_contrib * s["lav_pct"]
@@ -975,22 +1020,37 @@ def simula_capitale(fattori, rend_fondo_annui, rend_pac_annui, sched, scal) -> p
         else:
             risparmio_anno = 0.0
 
-        # --- FONDO ---
-        cap_fondo += vf_curr + tfr_curr + ca_curr
-        rend_lordo = cap_fondo * rend_fondo_annui[a]
-        rend_netto = rend_lordo * (1 - aliq_rend_fondo)
-        cap_fondo += rend_netto
-        cap_fondo *= (1 - s["ter_f"])
+        # --- CICLO MENSILE: versamenti in 12 rate, rendimento mese per mese ---
+        # Ogni rata prende solo il rendimento dei mesi RESIDUI dell'anno (fix
+        # della vecchia versione che dava un anno intero di rendimento a tutto
+        # il versamento annuo). TER e rivalutazione TFR convertiti in mensili.
+        rata_fondo = (vf_curr + tfr_curr + ca_curr) / 12.0
+        rata_pac = vp_curr / 12.0
+        rata_tfr = tfr_curr / 12.0
+        ter_f_m = 1 - (1 - s["ter_f"]) ** (1 / 12)
+        ter_p_m = 1 - (1 - ter_p) ** (1 / 12)
+        rt_m = (1 + rt) ** (1 / 12) - 1
+
+        for mese in range(12):
+            r_f = rend_fondo_mensili[a * 12 + mese]
+            r_p = rend_pac_mensili[a * 12 + mese]
+
+            # FONDO: versamento a inizio mese, rendimento tassato, poi TER
+            cap_fondo += rata_fondo
+            cap_fondo += cap_fondo * r_f * (1 - aliq_rend_fondo)
+            cap_fondo *= (1 - ter_f_m)
+
+            # PAC: versamento a inizio mese, rendimento, TER
+            versato_pac_cum += rata_pac
+            cap_pac += rata_pac
+            cap_pac *= (1 + r_p) * (1 - ter_p_m)
+
+            # TFR in azienda: accantonamento mensile + rivalutazione mensile
+            cap_tfr += rata_tfr
+            cap_tfr *= (1 + rt_m)
+
+        # Costo fisso amministrativo del fondo: una volta l'anno
         cap_fondo = max(0.0, cap_fondo - s["costo_fisso_f"])
-
-        # --- PAC ETF ---
-        versato_pac_cum += vp_curr
-        cap_pac += vp_curr
-        cap_pac *= (1 + rend_pac_annui[a]) * (1 - ter_p)
-
-        # --- TFR in azienda ---
-        cap_tfr += tfr_curr
-        cap_tfr *= (1 + rt)
 
         # --- Valori netti a uscita ---
         anni_adesione = anni_pregressi + anno
@@ -1003,6 +1063,7 @@ def simula_capitale(fattori, rend_fondo_annui, rend_pac_annui, sched, scal) -> p
         rows.append({
             "Anno": anno,
             "CCNL": s["ccnl"], "Livello": s["livello"], "Comparto": s["comparto"],
+            "Scatti": s["scatti"],
             "Occupato": "Sì" if occupato else "No",
             "RAL (€)": ral_curr,
             "Contrib. Min. CCNL (€)": vol_min,
@@ -1108,9 +1169,10 @@ if mancanti:
     )
     st.stop()
 
-rend_fondo_mat = np.empty((N_BAND, durata))
+rend_fondo_mat = np.empty((N_BAND, durata * 12))
 for a, s in enumerate(sched):
-    rend_fondo_mat[:, a] = mat_per_comparto[s["comparto_key"]][:, a]
+    rend_fondo_mat[:, a * 12:(a + 1) * 12] = \
+        mat_per_comparto[s["comparto_key"]][:, a * 12:(a + 1) * 12]
 
 # --- PAC: GBM parametrico / portafoglio ticker ---
 portafoglio_info = None
@@ -1286,7 +1348,10 @@ with col_b:
     st.markdown(f"**Previsione resampling** ({motore_txt})")
     key_sel = (fondo_sel, comparto)
     if key_sel in mat_per_comparto:
-        net_mat = rendimento_netto_comparto(mat_per_comparto[key_sel], ter_fondo, quota_ts)
+        # Le matrici sono MENSILI: compongo prima in rendimenti annui, poi
+        # applico tassa/TER per il netto annuo.
+        mat_annua = mensili_ad_annui(mat_per_comparto[key_sel])
+        net_mat = rendimento_netto_comparto(mat_annua, ter_fondo, quota_ts)
         df_prev = pd.DataFrame({
             "Anno": list(range(1, durata + 1)),
             "P10 netto (%)": np.percentile(net_mat, 10, axis=0) * 100,
@@ -1367,6 +1432,25 @@ if usa_portafoglio:
                 note_acc.append(f"{'⚠️' if stato=='warn' else '❓'} **{t}** — {nota}")
         if note_acc:
             st.warning("Verifica accumulazione/UCITS:\n\n" + "\n\n".join(note_acc))
+
+        # Avviso basato sui DATI: asset con volatilità annua alta (tipico di
+        # azioni singole) rendono la stima storica poco affidabile e allargano
+        # molto la banda P10-P90.
+        SOGLIA_VOL_ALTA = 0.25
+        vol_alte = [
+            f"**{t}** ({v*100:.0f}%/anno)"
+            for t, v in zip(pi["tickers"], pi["vol_annua_asset"])
+            if v > SOGLIA_VOL_ALTA
+        ]
+        if vol_alte:
+            st.warning(
+                "🎢 **Alta volatilità rilevata** per: " + ", ".join(vol_alte) +
+                f" (soglia {SOGLIA_VOL_ALTA*100:.0f}%). Tipico di azioni singole "
+                "o ETF settoriali/leva: rendimento e rischio stimati da un solo "
+                "titolo sono poco affidabili e possono compromettere l'analisi "
+                "di lungo periodo. Considera un peso ridotto o un ETF "
+                "diversificato, e valuta con prudenza la banda P10–P90."
+            )
 
         pc1, pc2, pc3 = st.columns(3)
         pc1.metric("Rendimento storico annuo (composto)", f"{pi['rend_portafoglio']*100:.2f}%")
@@ -1462,7 +1546,7 @@ st.plotly_chart(fig, use_container_width=True)
 st.subheader("📋 Dettaglio Anno per Anno")
 st.caption("Montanti = linea centrale P{}. Contributi e RAL crescono con carriera/inflazione.".format(percentile_perf))
 
-cols_show = ["Anno", "CCNL", "Livello", "Comparto", "Occupato", "RAL (€)",
+cols_show = ["Anno", "CCNL", "Livello", "Comparto", "Scatti", "Occupato", "RAL (€)",
              "Contrib. Min. CCNL (€)", "Vers. Volontario (€)", "TFR al Fondo (€)",
              "Contrib. Aziendale (€)", "Risparmio IRPEF (€)", "PAC annuo (€)",
              "Aliq. uscita fondo (%)", "Fondo Netto (€)", "PAC + TFR Netto (€)", "PAC Netto (€)"]
@@ -1470,7 +1554,7 @@ if usa_entrambi:
     cols_show.append("Fondo + PAC Netto (€)")
 
 fmt = {c: "€ {:,.0f}" for c in cols_show
-       if c not in ("Anno", "CCNL", "Livello", "Comparto", "Occupato", "Aliq. uscita fondo (%)")}
+       if c not in ("Anno", "CCNL", "Livello", "Comparto", "Scatti", "Occupato", "Aliq. uscita fondo (%)")}
 fmt["Aliq. uscita fondo (%)"] = "{:.1f}%"
 st.dataframe(df_main[cols_show].style.format(fmt), use_container_width=True, height=420)
 
