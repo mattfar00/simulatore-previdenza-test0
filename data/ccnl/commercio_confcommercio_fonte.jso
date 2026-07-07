@@ -1,0 +1,60 @@
+{
+  "nome": "Commercio Confcommercio (Fon.Te)",
+  "fondo": "Fon.Te",
+  "contrib_lav_pct": 0.0055,
+  "contrib_azienda_pct": 0.0155,
+  "contrib_azienda_u35_pct": 0.0155,
+  "tfr_pct": 0.0691,
+  "costo_iniziale": 15.5,
+  "costo_fisso": 22.0,
+  "mensilita": 14,
+  "livelli": {
+    "Quadro": 2183.09,
+    "I": 1966.54,
+    "II": 1701.04,
+    "III": 1453.94,
+    "IV": 1257.46,
+    "V": 1136.07,
+    "VI": 1019.94,
+    "VII": 873.22
+  },
+  "scatti_valore_livello": {
+    "Quadro": 30.0,
+    "I": 27.0,
+    "II": 25.0,
+    "III": 22.0,
+    "IV": 20.0,
+    "V": 18.0,
+    "VI": 16.0,
+    "VII": 15.0
+  },
+  "scatto_valore": 20.0,
+  "scatto_ogni_anni": 3,
+  "scatti_max": 5,
+  "comparti": {
+    "Conservativo": {
+      "ter": 0.005,
+      "rendimento_atteso": 0.0133,
+      "volatilita": 0.0281,
+      "quota_titoli_stato": 0.6
+    },
+    "Sviluppo": {
+      "ter": 0.0045,
+      "rendimento_atteso": 0.0241,
+      "volatilita": 0.0503,
+      "quota_titoli_stato": 0.4
+    },
+    "Dinamico": {
+      "ter": 0.0045,
+      "rendimento_atteso": 0.0636,
+      "volatilita": 0.0669,
+      "quota_titoli_stato": 0.25
+    },
+    "Crescita": {
+      "ter": 0.0045,
+      "rendimento_atteso": 0.046,
+      "volatilita": 0.0541,
+      "quota_titoli_stato": 0.15
+    }
+  }
+}
