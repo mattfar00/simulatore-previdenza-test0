@@ -1680,48 +1680,40 @@ anni_lbl = [y for y in anni_ann_full if y >= anno_inizio_storico]
 
 col_a, col_b = st.columns(2)
 
-with col_a:
-    st.markdown("**Storico reale (anno per anno)**")
-    if serie_ann_sel:
-        df_stor = pd.DataFrame({
-            "Anno": anni_lbl,
-            "Rendimento (%)": [r * 100 for r in serie_ann_sel],
-        })
-        st.dataframe(
-            df_stor.style.format({"Rendimento (%)": "{:+.2f}"}),
-            use_container_width=True, hide_index=True, height=300,
-        )
-        cagr_l = float(np.prod([1 + r for r in serie_ann_sel])) ** (1 / len(serie_ann_sel)) - 1
-        s1, s2 = st.columns(2)
-        s1.metric("CAGR", f"{cagr_l*100:.2f}%")
-        s2.metric("Anno peggiore", f"{min(serie_ann_sel)*100:+.1f}%")
-        if len(serie_ann_sel) < 8:
-            st.caption(f"⚠️ Solo {len(serie_ann_sel)} anni disponibili: statistiche indicative.")
-        if anno_inizio_storico > ANNO_STORICO_MIN_GLOBALE and len(serie_ann_sel) < len(serie_ann_full):
-            st.caption(f"✂️ Storico tagliato: {len(serie_ann_full) - len(serie_ann_sel)} "
-                       f"anni esclusi (prima del {anno_inizio_storico}).")
-    else:
-        st.info("Storico annuale non disponibile per questo comparto (o azzerato dal taglio impostato).")
+st.markdown("**Storico reale (anno per anno)**")
+if serie_ann_sel:
+    df_stor = pd.DataFrame({
+        "Anno": anni_lbl,
+        "Rendimento (%)": [r * 100 for r in serie_ann_sel],
+    })
+    st.dataframe(
+        df_stor.style.format({"Rendimento (%)": "{:+.2f}"}),
+        use_container_width=True, hide_index=True, height=300,
+    )
+    cagr_l = float(np.prod([1 + r for r in serie_ann_sel])) ** (1 / len(serie_ann_sel)) - 1
+    s1, s2 = st.columns(2)
+    s1.metric("CAGR", f"{cagr_l*100:.2f}%")
+    s2.metric("Anno peggiore", f"{min(serie_ann_sel)*100:+.1f}%")
+    if len(serie_ann_sel) < 8:
+        st.caption(f"⚠️ Solo {len(serie_ann_sel)} anni disponibili: statistiche indicative.")
+    if anno_inizio_storico > ANNO_STORICO_MIN_GLOBALE and len(serie_ann_sel) < len(serie_ann_full):
+        st.caption(f"✂️ Storico tagliato: {len(serie_ann_full) - len(serie_ann_sel)} "
+                   f"anni esclusi (prima del {anno_inizio_storico}).")
+else:
+    st.info("Storico annuale non disponibile per questo comparto (o azzerato dal taglio impostato).")
 
-with col_b:
-    st.markdown(f"**Previsione resampling** ({motore_txt})")
-    key_sel = (fondo_sel, comparto)
-    if key_sel in mat_per_comparto:
-        mat_annua = mensili_ad_annui(mat_per_comparto[key_sel])
-        df_prev = pd.DataFrame({
-            "Anno": list(range(1, durata + 1)),
-            "P10 (%)": np.percentile(mat_annua, 10, axis=0) * 100,
-            "P50 (%)": np.percentile(mat_annua, 50, axis=0) * 100,
-            "P90 (%)": np.percentile(mat_annua, 90, axis=0) * 100,
-        })
-        st.dataframe(
-            df_prev.style.format({c: "{:+.2f}" for c in df_prev.columns if c != "Anno"}),
-            use_container_width=True, hide_index=True, height=300,
-        )
-        st.caption(f"Rendimento annuo mediano simulato: "
-                   f"**{np.median(mat_annua)*100:+.2f}%** (su tutti anni e scenari).")
-    else:
-        st.info("Comparto non attivo all'anno 1 (cambio CCNL immediato?).")
+# --- Dispersione simulata: 3 numeri di sintesi, NON una tabella anno-per-anno ---
+key_sel = (fondo_sel, comparto)
+if key_sel in mat_per_comparto:
+    mat_annua = mensili_ad_annui(mat_per_comparto[key_sel])
+    st.caption(f"**Dispersione dei rendimenti simulati** ({motore_txt}) — "
+               f"in un anno qualsiasi, su tutti gli scenari:")
+    d1, d2, d3 = st.columns(3)
+    d1.metric("Mediano (P50)", f"{np.median(mat_annua)*100:+.2f}%")
+    d2.metric("Sfortunato (P10)", f"{np.percentile(mat_annua, 10)*100:+.2f}%")
+    d3.metric("Fortunato (P90)", f"{np.percentile(mat_annua, 90)*100:+.2f}%")
+    st.caption("Non è una previsione anno-per-anno: è la forbice di rischio "
+               "che alimenta la banda P10–P90 del grafico montante.")
 
 st.divider()
 
@@ -1976,6 +1968,46 @@ fig.update_layout(xaxis_title="Anno", yaxis_title="Capitale Netto (€)",
                   legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                   height=460)
 st.plotly_chart(fig, use_container_width=True)
+
+
+st.divider()
+st.subheader(f"🔎 Rendimento annuo del fondo nello scenario scelto — P{percentile_perf}")
+st.caption(
+    "Questa tabella traduce lo slider del percentile in numeri concreti: mostra "
+    "il rendimento del fondo **anno per anno** lungo la traiettoria P"
+    f"{percentile_perf} (la stessa disegnata come linea centrale nel grafico). "
+    "Cambiando il percentile in sidebar, cambiano questi rendimenti. Nota bene: "
+    "è già al netto dell'imposta sostitutiva annua (dentro la quota); NON è "
+    "ancora applicata la tassa di USCITA (9–23%), che colpisce solo il montante "
+    "finale."
+)
+
+_rend_annui_fondo = np.prod(1 + rend_fondo_sel.reshape(durata, 12), axis=1) - 1
+_indice_cum = 100 * np.cumprod(1 + _rend_annui_fondo)
+
+df_rend_perc = pd.DataFrame({
+    "Anno": list(range(1, durata + 1)),
+    "Rendimento annuo (%)": _rend_annui_fondo * 100,
+    "Indice (base 100)": _indice_cum,
+})
+st.dataframe(
+    df_rend_perc.style.format({
+        "Rendimento annuo (%)": "{:+.2f}",
+        "Indice (base 100)": "{:,.1f}",
+    }),
+    use_container_width=True, hide_index=True, height=380,
+)
+
+_cagr_perc = (_indice_cum[-1] / 100) ** (1 / durata) - 1
+_pc1, _pc2, _pc3 = st.columns(3)
+_pc1.metric("CAGR di questo scenario", f"{_cagr_perc*100:.2f}%")
+_pc2.metric("Anno migliore", f"{_rend_annui_fondo.max()*100:+.1f}%")
+_pc3.metric("Anno peggiore", f"{_rend_annui_fondo.min()*100:+.1f}%")
+st.caption(
+    "💡 Anche uno scenario complessivamente fortunato (P90) contiene anni "
+    "negativi, e uno sfortunato (P10) contiene anni positivi: il percentile "
+    "descrive il risultato *cumulato*, non ogni singolo anno."
+)
 
 
 # ---------------------------------------------------------------------------
