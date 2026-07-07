@@ -5,6 +5,7 @@ import numpy as np
 import os
 import csv
 import json
+from backtest.ui import render_backtest_tab, render_backtest_via_motore
 
 # ---------------------------------------------------------------------------
 # CONFIGURAZIONE PAGINA
@@ -2003,3 +2004,30 @@ st.caption(
     "banda P10–P90 riflette l'incertezza dei rendimenti, non quella di "
     "carriera. Non è consulenza finanziaria o previdenziale."
 )
+st.divider()
+
+_ctx_backtest = {
+    "durata": durata,
+    "storico_mensile": STORICO_MENSILE,
+    "fondo": preset["fondo"],
+    "comparto": comparto,
+    "usa_portafoglio": usa_portafoglio,
+    "portafoglio_info": portafoglio_info,
+    "ticker_to_nome": TICKER_TO_NOME,
+    "simula_capitale": simula_capitale,
+    "fattori_mediani": fattori_mediani,
+    "sched": sched,
+    "scal": scal,
+    "vol_extra_serie": vol_extra_serie,
+    "vp_serie": vp_serie,
+    "cap_iniziale_fondo": capitale_iniziale_fondo,
+    "cap_iniziale_pac": capitale_iniziale_pac,
+}
+
+_tab_pv, _tab_motore = st.tabs(
+    ["📈 Backtest (growth asset)", "🏦 Backtest via motore (TFR/IRPEF)"]
+)
+with _tab_pv:
+    render_backtest_tab(_ctx_backtest)
+with _tab_motore:
+    render_backtest_via_motore(_ctx_backtest)
