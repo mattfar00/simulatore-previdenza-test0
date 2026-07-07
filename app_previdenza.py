@@ -1519,12 +1519,13 @@ for a, s in enumerate(sched):
         mat_per_comparto[s["comparto_key"]][:, a * 12:(a + 1) * 12]
 
 # --- PAC: GBM parametrico / portafoglio ticker ---
+# --- PAC: GBM parametrico / portafoglio ticker ---
 portafoglio_info = None
 errore_portafoglio = None
 if usa_portafoglio:
     if not tickers_input.strip():
         errore_portafoglio = "Nessun ticker selezionato: usa il catalogo o inseriscine uno."
-        rend_pac_mat = genera_rendimenti_gbm(0.07, 0.15, durata, n=N_BAND, seed=11)
+        rend_pac_mat = genera_rendimenti_gbm(0.07, 0.15, durata, n=N_BAND, seed=st.session_state.master_seed + 100)
     else:
         try:
             tickers, pesi = parse_ticker_pesi(tickers_input, pesi_input)
@@ -1533,13 +1534,13 @@ if usa_portafoglio:
             rend_override_eff = rend_override_val if override_rend else None
             rend_pac_mat = genera_rendimenti_portafoglio_gbm(
                 portafoglio_info["media_mensile"], portafoglio_info["cholesky_mensile"],
-                pesi, durata, rend_override=rend_override_eff, n=N_BAND, seed=13,
+                pesi, durata, rend_override=rend_override_eff, n=N_BAND, seed=st.session_state.master_seed + 200,
             )
         except Exception as e:
             errore_portafoglio = str(e)
-            rend_pac_mat = genera_rendimenti_gbm(0.07, 0.15, durata, n=N_BAND, seed=11)
+            rend_pac_mat = genera_rendimenti_gbm(0.07, 0.15, durata, n=N_BAND, seed=st.session_state.master_seed + 100)
 else:
-    rend_pac_mat = genera_rendimenti_gbm(rend_medio_pac, vol_pac, durata, n=N_BAND, seed=11)
+    rend_pac_mat = genera_rendimenti_gbm(rend_medio_pac, vol_pac, durata, n=N_BAND, seed=st.session_state.master_seed + 100)
 
 # --- Traiettorie centrali (per la tabella e la linea centrale) ---
 rend_fondo_sel = seleziona_traiettoria_per_percentile(rend_fondo_mat, percentile_perf)
