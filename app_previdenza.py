@@ -23,7 +23,7 @@ st.title("🚀 Confronto Previdenziale: Fondo vs PAC + TFR")
 # Schema di ciascun file (vedi _template.json per la versione commentata):
 #   nome, fondo, contrib_lav_pct, contrib_azienda_pct, contrib_azienda_u35_pct,
 #   tfr_pct, costo_iniziale, costo_fisso, mensilita, livelli {},
-#   scatti_valore_livello {} (opzionale), scatto_valore, scatto_ogni_anni,
+#   scatti_valore_livello {}, scatto_ogni_anni,
 #   scatti_max, comparti [lista di nomi]
 #
 # IMPORTANTE:
@@ -70,8 +70,7 @@ def carica_ccnl_preset():
     campi_obbligatori = [
         "nome", "fondo", "contrib_lav_pct", "contrib_azienda_pct",
         "contrib_azienda_u35_pct", "tfr_pct", "costo_iniziale", "costo_fisso",
-        "mensilita", "livelli", "scatto_valore", "scatto_ogni_anni",
-        "scatti_max", "comparti",
+        "mensilita", "livelli", "scatto_ogni_anni", "scatti_max", "comparti",
     ]
 
     preset, errori = {}, []
@@ -106,6 +105,15 @@ def carica_ccnl_preset():
             continue
 
         nome = cfg["nome"]
+        scatti_liv = cfg.get("scatti_valore_livello", {})
+        livelli_senza_scatto = [l for l in cfg["livelli"] if l not in scatti_liv]
+        if livelli_senza_scatto:
+            errori.append(
+                f"{fname}: livelli senza scatto specifico: {livelli_senza_scatto}. "
+                f"Aggiungi tutti i livelli in 'scatti_valore_livello'."
+            )
+            continue
+
         preset[nome] = {
             "fondo": cfg["fondo"],
             "contrib_lav_pct": cfg["contrib_lav_pct"],
@@ -116,8 +124,7 @@ def carica_ccnl_preset():
             "costo_fisso": cfg["costo_fisso"],
             "mensilita": cfg["mensilita"],
             "livelli": cfg["livelli"],
-            "scatti_valore_livello": cfg.get("scatti_valore_livello", {}),
-            "scatto_valore": cfg["scatto_valore"],
+            "scatti_valore_livello": scatti_liv,
             "scatto_ogni_anni": cfg["scatto_ogni_anni"],
             "scatti_max": cfg["scatti_max"],
             "comparti": lista_comparti,
@@ -390,17 +397,16 @@ def classifica_ticker(ticker: str):
 # SIDEBAR
 # ---------------------------------------------------------------------------
 st.sidebar.header("1. Contratto e Inquadramento")
-ccnl_scelto = st.sidebar.selectbox("CCNL / Fondo negoziale", list(CCNL_PRESET.keys()), index=0)
+ccnl_scelto = st.sidebar.selectbox("CCNL", list(CCNL_PRESET.keys()), index=0)
 preset = CCNL_PRESET[ccnl_scelto]
 mensilita = preset["mensilita"]
+st.sidebar.caption(f"Fondo negoziale associato: **{preset['fondo']}**")
 
 livello = st.sidebar.selectbox("Livello di inquadramento", list(preset["livelli"].keys()))
 minimo_mensile = preset["livelli"][livello]
 minimo_annuo = minimo_mensile * mensilita
 
-scatto_valore_livello = preset.get("scatti_valore_livello", {}).get(
-    livello, preset["scatto_valore"]
-)
+scatto_valore_livello = preset["scatti_valore_livello"][livello]
 comparti_base = list(preset["comparti"])
 
 st.sidebar.caption(
@@ -1185,8 +1191,7 @@ def costruisci_schedule(durata, ccnl_start, livello_start, comparto_start,
         mens_a = preset_a["mensilita"]
         minimo_mensile_a = preset_a["livelli"][liv_att]
         minimo_annuo_a = minimo_mensile_a * mens_a
-        scatto_val_liv_a = preset_a.get("scatti_valore_livello", {}).get(
-            liv_att, preset_a["scatto_valore"])
+        scatto_val_liv_a = preset_a["scatti_valore_livello"][liv_att]
         scatto_annuo_a = scatto_val_liv_a * mens_a
         freq_a = preset_a["scatto_ogni_anni"]
         max_a = preset_a["scatti_max"]
