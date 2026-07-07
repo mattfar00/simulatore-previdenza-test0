@@ -290,19 +290,45 @@ def render_pac_avanzato(ctx):
     seed = int(st.session_state.get("master_seed", 33))
 
     # --- Precondizione: serve il portafoglio ticker gia' scaricato da Yahoo --
-    # Nessun fallback parametrico "inventato": se manca, il tab si ferma qui
-    # e spiega come attivarlo, invece di proporre numeri a caso.
+    # Nessun fallback parametrico "inventato": se manca, il tab si ferma qui.
+    # Distinguo due casi ben diversi, così non nascondo il vero problema:
+    #   a) il portafoglio ticker non e' stato configurato -> spiego come farlo
+    #   b) e' configurato ma il download da Yahoo e' fallito (rete, rate
+    #      limit, ticker non valido, storico comune troppo corto...) -> mostro
+    #      l'errore VERO invece del generico "configuralo"
+    errore_download = ctx.get("portafoglio_errore")
+    usa_portafoglio_ctx = ctx.get("usa_portafoglio", False)
     stima = classifica_e_stima(ctx)
     if stima is None:
-        st.warning(
-            "⚠️ Questo modulo calcola TUTTI i parametri (rendimento, "
-            "volatilità, correlazione) dai prezzi reali di Yahoo Finance — "
-            "non propone assunzioni manuali. Configura prima il portafoglio "
-            "in sidebar: **5. PAC (ETF)** → modalità **'Portafoglio ticker "
-            "(dati storici)'**, seleziona almeno un ETF azionario e uno "
-            "obbligazionario (es. dal catalogo, categoria 'Obbligazionario'), "
-            "poi torna su questo tab."
-        )
+        if usa_portafoglio_ctx and errore_download:
+            st.error(
+                f"⚠️ Il portafoglio ticker è configurato ma il download dei "
+                f"prezzi da Yahoo Finance è fallito: **{errore_download}**\n\n"
+                f"Cause tipiche: nessuna connessione in uscita consentita "
+                f"dall'ambiente di deploy, limite di richieste di Yahoo "
+                f"raggiunto (riprova tra qualche minuto), un ticker scritto "
+                f"male, o storico comune tra i ticker scelti troppo corto "
+                f"(serve almeno un paio d'anni di mesi in comune). Controlla "
+                f"anche la sezione **'📈 Portafoglio PAC a Ticker'** più in "
+                f"alto nella pagina principale, che mostra lo stesso errore."
+            )
+        elif usa_portafoglio_ctx:
+            st.warning(
+                "⚠️ Il portafoglio ticker risulta configurato ma non ancora "
+                "elaborato: aspetta il ricalcolo della pagina principale (a "
+                "volte serve un secondo giro dopo aver cambiato i ticker), "
+                "poi torna su questo tab."
+            )
+        else:
+            st.warning(
+                "⚠️ Questo modulo calcola TUTTI i parametri (rendimento, "
+                "volatilità, correlazione) dai prezzi reali di Yahoo Finance — "
+                "non propone assunzioni manuali. Configura prima il portafoglio "
+                "in sidebar: **5. PAC (ETF)** → modalità **'Portafoglio ticker "
+                "(dati storici)'**, seleziona almeno un ETF azionario e uno "
+                "obbligazionario (es. dal catalogo, categoria 'Obbligazionario'), "
+                "poi torna su questo tab."
+            )
         return
 
     serie_e, serie_b = stima["serie_e"], stima["serie_b"]
