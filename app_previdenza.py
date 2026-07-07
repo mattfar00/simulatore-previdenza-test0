@@ -1678,8 +1678,6 @@ anni_ann_full = STORICO_ANNUALE_ANNI.get(fondo_sel, {}).get(comparto, [])
 serie_ann_sel = filtra_storico_da_anno(serie_ann_full, anni_ann_full, anno_inizio_storico)
 anni_lbl = [y for y in anni_ann_full if y >= anno_inizio_storico]
 
-col_a, col_b = st.columns(2)
-
 st.markdown("**Storico reale (anno per anno)**")
 if serie_ann_sel:
     df_stor = pd.DataFrame({
