@@ -7,6 +7,16 @@ import csv
 import json
 from backtest.ui import render_backtest_tab, render_backtest_via_motore
 
+# --- Logica PAC estratta in pac_engine.py (catalogo ETF, GBM, Cholesky, Yahoo) ---
+from pac_engine import (
+    CATALOGO_ETF, TICKER_TO_NOME, QUOTA_TITOLI_STATO_TICKER,
+    classifica_ticker, mensili_ad_annui, rendimento_netto_pac,
+    seleziona_traiettoria_per_percentile, genera_rendimenti_gbm,
+    parse_ticker_pesi, scarica_prezzi_mensili, stima_parametri_portafoglio,
+    genera_rendimenti_portafoglio_gbm,
+)
+from pac_avanzato import render_pac_avanzato
+
 # ---------------------------------------------------------------------------
 # CONFIGURAZIONE PAGINA
 # ---------------------------------------------------------------------------
@@ -24,21 +34,6 @@ if "master_seed" not in st.session_state:
 # Aggiungere un nuovo CCNL = copiare data/ccnl/_template.json, compilarlo e
 # salvarlo con un nuovo nome: NON serve toccare questo script. I file che
 # iniziano con "_" (come _template.json) vengono ignorati dal loader.
-#
-# Schema di ciascun file (vedi _template.json per la versione commentata):
-#   nome, fondo, contrib_lav_pct, contrib_azienda_pct, contrib_azienda_u35_pct,
-#   tfr_pct, costo_iniziale, costo_fisso, mensilita, livelli {},
-#   scatti_valore_livello {}, scatto_ogni_anni,
-#   scatti_max, comparti [lista di nomi]
-#
-# IMPORTANTE:
-# - "fondo" deve combaciare col nome del CSV storico in data/<fondo>.csv
-#   (es. fondo="Cometa" -> data/cometa.csv), altrimenti il resampling
-#   storico non trova le serie.
-# - I nomi in "comparti" devono combaciare ESATTAMENTE con le colonne del
-#   CSV storico di quel fondo. Il rendimento non è un parametro qui: il
-#   motore usa SEMPRE lo storico reale della quota (ricampionato dal CSV),
-#   mai un'assunzione parametrica.
 CARTELLA_CCNL_CANDIDATE = [
     "data/ccnl",
     "ccnl",
@@ -55,18 +50,8 @@ def _trova_cartella_ccnl():
 @st.cache_data
 def carica_ccnl_preset():
     """
-    Legge tutti i *.json in data/ccnl/ (esclusi quelli che iniziano con "_",
-    come _template.json) e costruisce il dizionario CCNL_PRESET.
-
-    preset["comparti"] è una semplice LISTA di nomi comparto (es. ["Garantito",
-    "Bilanciato", "Azionario"]). Il rendimento non è più un parametro del
-    CCNL: il motore usa sempre il rendimento storico reale della quota
-    (ricampionato da data/<fondo>.csv), quindi qui basta sapere quali nomi di
-    comparto esistono e devono combaciare con le colonne di quel CSV.
-
-    Ritorna (preset_dict, cartella_usata, errori). errori è una lista di
-    messaggi per file malformati o campi mancanti (il file viene saltato,
-    non blocca gli altri).
+    Legge tutti i *.json in data/ccnl/ (esclusi quelli che iniziano con "_")
+    e costruisce il dizionario CCNL_PRESET. Ritorna (preset, cartella, errori).
     """
     cartella = _trova_cartella_ccnl()
     if cartella is None:
@@ -97,8 +82,6 @@ def carica_ccnl_preset():
 
         comparti_raw = cfg["comparti"]
         if isinstance(comparti_raw, dict):
-            # Compatibilità con il vecchio schema (dict di parametri per
-            # comparto): basta il nome, i parametri numerici sono ignorati.
             lista_comparti = list(comparti_raw.keys())
         elif isinstance(comparti_raw, list):
             lista_comparti = list(comparti_raw)
@@ -158,17 +141,6 @@ if _ERRORI_CCNL:
 # ---------------------------------------------------------------------------
 # STORICO RENDIMENTI DEI COMPARTI — un CSV per fondo (data/)
 # ---------------------------------------------------------------------------
-# Un file per fondo, un comparto per colonna: facile da aprire, aggiornare
-# (nuova riga in fondo con le quote del mese) e versionare in git. Formato:
-#
-#   anno,mese,Garantito,Bilanciato,Azionario,Monetario     <- data/cometa.csv
-#   2025,12,10.446,21.686,25.686,15.276
-#
-#   anno,mese,Conservativo,Sviluppo,Dinamico,Crescita      <- data/fonte.csv
-#   2025,12,13.408,21.945,24.976,20.301
-#
-# Celle vuote sono ammesse (comparto nato più tardi): quel mese viene ignorato
-# per quel comparto. Fondo nuovo = nuovo CSV + una riga in FILE_STORICO_PER_FONDO.
 FILE_STORICO_PER_FONDO = {
     "Cometa": "cometa.csv",
     "Fon.Te": "fonte.csv",
@@ -190,17 +162,10 @@ def _trova_file_fondo(nome_file: str):
 @st.cache_data
 def carica_quote_storiche():
     """
-    Legge un CSV largo per fondo (anno, mese, <comparto1>, <comparto2>, ...) e
-    lo trasforma in strutture calcolate a runtime (nessun dato hard-coded):
-    - STORICO_MENSILE[fondo][comparto] -> rendimenti mensili (ordine cronologico)
-    - STORICO_ANNUALE[fondo][comparto] -> rendimenti annui Dic->Dic
-    - STORICO_MENSILE_ANNI / STORICO_ANNUALE_ANNI: stesse chiavi, con l'ANNO
-      corrispondente a ciascuna osservazione (stessa lunghezza, stesso ordine).
-      Servono per poter tagliare lo storico da un anno di inizio scelto
-      dall'utente (es. per escludere il rimbalzo post-2008), mantenendo
-      l'allineamento tra rendimento e anno.
-
-    Ritorna (mensile, annuale, mensile_anni, annuale_anni, percorsi_trovati, fondi_mancanti).
+    Legge un CSV largo per fondo (anno, mese, <comparto1>, ...) e costruisce:
+    - STORICO_MENSILE / STORICO_ANNUALE per fondo/comparto
+    - STORICO_MENSILE_ANNI / STORICO_ANNUALE_ANNI con l'anno di ogni osservazione
+    Ritorna (mensile, annuale, mensile_anni, annuale_anni, percorsi, mancanti).
     """
     mensile, annuale = {}, {}
     mensile_anni, annuale_anni = {}, {}
@@ -231,7 +196,6 @@ def carica_quote_storiche():
             rend_m = [round(serie[chiavi[i]] / serie[chiavi[i-1]] - 1, 6)
                       for i in range(1, len(chiavi))]
             mensile.setdefault(fondo, {})[comp] = rend_m
-            # anno del mese di ARRIVO di ciascun rendimento mensile
             mensile_anni.setdefault(fondo, {})[comp] = [chiavi[i][0] for i in range(1, len(chiavi))]
 
             anni_dic = sorted({y for (y, m) in serie if m == 12})
@@ -266,23 +230,12 @@ def mensile_disponibile(fondo: str, comparto: str, min_mesi: int = 24) -> bool:
 
 
 def filtra_storico_da_anno(serie: list, anni: list, anno_inizio: int) -> list:
-    """
-    Mantiene solo le osservazioni di `serie` con anno >= anno_inizio, usando
-    `anni` (stessa lunghezza) come etichetta di riferimento. Usata per
-    mitigare il bias da "punto di partenza" nelle serie storiche brevi (es.
-    un fondo nato subito prima di una crisi mostra un primo rimbalzo enorme
-    che gonfia il CAGR se lo storico usato parte da lì). Se anno_inizio è
-    <= al primo anno disponibile, la serie non viene toccata.
-    """
+    """Mantiene solo le osservazioni con anno >= anno_inizio (mitiga il bias da punto di partenza)."""
     if not serie:
         return serie
     return [r for r, y in zip(serie, anni) if y >= anno_inizio]
 
 
-# Limiti globali per lo slider "anno di inizio storico": min = l'anno più
-# vecchio disponibile in assoluto tra tutti i fondi/comparti caricati; max =
-# lasciamo margine di almeno 5 anni all'ultima serie più corta, per evitare
-# di azzerare per errore lo storico di un comparto.
 _anni_min_per_serie = [min(anni) for fo in STORICO_ANNUALE_ANNI.values() for anni in fo.values() if anni]
 _anni_max_per_serie = [max(anni) for fo in STORICO_ANNUALE_ANNI.values() for anni in fo.values() if anni]
 ANNO_STORICO_MIN_GLOBALE = min(_anni_min_per_serie) if _anni_min_per_serie else 2000
@@ -295,108 +248,6 @@ COEFF_LAVORATORE = {
     "Operaio":   0.88,
     "Impiegato": 1.08,
 }
-
-# ---------------------------------------------------------------------------
-# CATALOGO ETF PREDEFINITI — ticker Yahoo Finance (SOLO accumulazione UCITS)
-# ---------------------------------------------------------------------------
-# Catalogo curato per contenere solo ETF/ETC UCITS ad ACCUMULAZIONE (i proventi
-# vengono reinvestiti, coerente con un PAC di lungo periodo). I ticker noti come
-# "a distribuzione" sono stati rimossi dal catalogo e finiscono nella lista
-# ETF_FLAG piu' sotto, che alimenta il controllo automatico.
-CATALOGO_ETF = {
-    "Azionario Globale": {
-        "iShares Core MSCI World Acc (SWDA.MI)": "SWDA.MI",
-        "Vanguard FTSE All-World Acc (VWCE.DE)": "VWCE.DE",
-        "Xtrackers MSCI World Acc (XDWD.MI)": "XDWD.MI",
-        "iShares MSCI ACWI Acc (SSAC.MI)": "SSAC.MI",
-    },
-    "Azionario USA": {
-        "iShares Core S&P 500 Acc (CSSPX.MI)": "CSSPX.MI",
-        "Xtrackers S&P 500 Acc (XSPX.MI)": "XSPX.MI",
-        "Invesco Nasdaq-100 Acc (EQAC.MI)": "EQAC.MI",
-    },
-    "Azionario Europa": {
-        "Xtrackers Euro Stoxx 50 Acc (XESC.MI)": "XESC.MI",
-        "iShares Core MSCI EMU Acc (CEBL.MI)": "CEBL.MI",
-    },
-    "Azionario Mercati Emergenti": {
-        "iShares Core MSCI EM IMI Acc (EIMI.MI)": "EIMI.MI",
-        "Xtrackers MSCI Emerging Markets Acc (XMME.MI)": "XMME.MI",
-    },
-    "Obbligazionario": {
-        "iShares Core Global Aggregate Bond EUR-H Acc (AGGH.MI)": "AGGH.MI",
-        "Xtrackers Global Government Bond EUR-H Acc (XG7S.MI)": "XG7S.MI",
-    },
-    "Oro e Materie Prime": {
-        "iShares Physical Gold ETC (SGLN.MI)": "SGLN.MI",
-        "Invesco Physical Gold ETC (SGLD.MI)": "SGLD.MI",
-        "WisdomTree Broad Commodities Acc (WCOA.MI)": "WCOA.MI",
-    },
-    "Immobiliare (REIT)": {
-        "Xtrackers FTSE EPRA/NAREIT Global Acc (XREA.MI)": "XREA.MI",
-    },
-}
-# Mappa inversa ticker -> nome leggibile, utile per la legenda finale
-TICKER_TO_NOME = {t: nome for cat in CATALOGO_ETF.values() for nome, t in cat.items()}
-# Insieme dei ticker "certificati" ad accumulazione UCITS dal catalogo
-WHITELIST_ACC_UCITS = set(TICKER_TO_NOME.keys())
-
-# ---------------------------------------------------------------------------
-# QUOTA "TITOLI DI STATO/WHITE LIST" PER TICKER (tassazione PAC differenziata)
-# ---------------------------------------------------------------------------
-# In Italia i proventi/plusvalenze di fondi e ETF armonizzati godono di
-# un'aliquota ridotta al 12,5% sulla quota "riferibile" a titoli di Stato
-# italiani e di paesi white list, invece del 26% ordinario (D.L. 351/2001 e
-# successive interpretazioni). La percentuale ESATTA va però certificata
-# periodicamente dall'emittente del fondo (di norma nella documentazione
-# fiscale annuale, non ricavabile in modo affidabile dai soli prezzi Yahoo).
-# Questa mappa fornisce SOLO una stima grezza (0-1) per i pochi ticker del
-# catalogo dove la composizione è inequivocabile (es. un fondo di soli titoli
-# di Stato = 1.0). Per fondi obbligazionari misti (governativi+corporate) o
-# ticker manuali, la quota va impostata a mano dall'utente: non è stimabile
-# con sicurezza qui. Azionario, oro, REIT = 0 (nessuna componente governativa).
-QUOTA_TITOLI_STATO_TICKER = {
-    "XG7S.MI": 1.00,   # Xtrackers Global Government Bond: solo titoli di Stato
-    # AGGH.MI (Global Aggregate Bond) è MISTO governativo+corporate+cartolarizzato:
-    # non assegno una quota automatica, va impostata a mano se lo usi.
-}
-
-# Ticker noti come NON ad accumulazione (a distribuzione) o da verificare.
-# Usati per avvisare l'utente se li inserisce a mano.
-ETF_FLAG = {
-    "EQQQ.MI": "a DISTRIBUZIONE — la versione ad accumulo è EQAC.MI (o SB.. classi acc)",
-    "EXSA.MI": "a DISTRIBUZIONE (iShares STOXX Europe 600, dist)",
-    "IWDP.MI": "a DISTRIBUZIONE (Property *Yield*)",
-    "IBGX.MI": "a DISTRIBUZIONE (iShares Euro Gov Bond 3-5y, dist)",
-    "IEBC.MI": "a DISTRIBUZIONE (iShares Euro Corporate Bond, dist)",
-    "EMU.MI":  "DA VERIFICARE (esistono classi dist e acc con ticker vicini)",
-    "IWRD.MI": "a DISTRIBUZIONE (versione acc: SWDA.MI)",
-    "VWRL.MI": "a DISTRIBUZIONE (versione acc: VWCE.DE)",
-}
-
-def classifica_ticker(ticker: str):
-    """
-    Ritorna (stato, nota) sullo stato di accumulazione/UCITS di un ticker.
-    stato ∈ {"ok", "warn", "sconosciuto"}.
-    - "ok": presente nel catalogo curato (accumulazione UCITS).
-    - "warn": presente in ETF_FLAG (distribuente o da verificare).
-    - "sconosciuto": non classificabile automaticamente -> l'utente deve
-      verificarne dist/acc e status UCITS sulla scheda (KID/factsheet).
-    Nota: Yahoo Finance NON espone in modo affidabile il flag dist/acc, quindi
-    la verifica automatica si basa su una whitelist curata, non sui dati Yahoo.
-    """
-    t = ticker.strip().upper()
-    if t in WHITELIST_ACC_UCITS:
-        return "ok", "accumulazione UCITS (da catalogo curato)"
-    if t in ETF_FLAG:
-        return "warn", ETF_FLAG[t]
-    return "sconosciuto", ("non in whitelist: può essere un ETF non catalogato "
-                           "o un'AZIONE SINGOLA. Le azioni singole sono ammesse "
-                           "ma hanno volatilità molto più alta di un ETF "
-                           "diversificato e possono compromettere l'analisi "
-                           "(la stima storica di rendimento/rischio su un solo "
-                           "titolo è poco affidabile). Se è un ETF, verifica "
-                           "sul KID che sia ad accumulazione e UCITS.")
 
 # ---------------------------------------------------------------------------
 # SIDEBAR
@@ -421,7 +272,7 @@ st.sidebar.caption(
 # --- Pulsante Ricalcolo ---
 if st.sidebar.button("🎲 Ricalcola Scenari Casuali"):
     st.session_state.master_seed = int(np.random.randint(0, 100000))
-    
+
 st.sidebar.markdown("**Composizione della RAL**")
 anni_anzianita_pregressi = st.sidebar.number_input(
     "Scatti di anzianità già maturati", min_value=0, max_value=preset["scatti_max"],
@@ -500,7 +351,7 @@ if usa_passaggi_livello:
         passaggi_livello.append((int(anno_da), livello_nuovo))
     passaggi_livello.sort(key=lambda x: x[0])
 
-# --- NUOVO: Cambio CCNL / fondo durante la carriera --------------------------
+# --- Cambio CCNL / fondo durante la carriera --------------------------------
 st.sidebar.markdown("**Cambio CCNL / fondo (cambio settore)**")
 usa_cambio_ccnl = st.sidebar.checkbox(
     "Pianifica uno o più cambi di CCNL durante la carriera", value=False,
@@ -542,22 +393,16 @@ if usa_cambio_ccnl:
         value=True,
         help="⚠️ Punto normativo NON del tutto pacifico. La posizione "
              "individuale nei fondi pensione negoziali è in linea generale "
-             "portabile (TFR + contributi lavoratore + contributi azienda "
-             "seguono il lavoratore), ma la legge lascia margini di "
-             "interpretazione su casi specifici legati al cambio di fondo di "
-             "categoria. Attiva questa casella per simulare lo scenario in "
-             "cui l'intero montante (compresa la quota versata dal datore) "
-             "si trasferisce col cambio di lavoro/CCNL; disattivala per "
-             "simulare lo scenario prudenziale in cui SOLO la quota versata "
-             "dal datore resta 'congelata' nel vecchio fondo/non si trasferisce "
-             "(TFR e contributi tuoi restano comunque tuoi in entrambi i casi). "
-             "Non sono un consulente legale: verifica sempre lo statuto del "
+             "portabile, ma la legge lascia margini di interpretazione su casi "
+             "specifici. Attiva per simulare il trasferimento dell'intero "
+             "montante; disattiva per lo scenario prudenziale in cui la quota "
+             "del datore non si trasferisce. Verifica sempre lo statuto del "
              "fondo specifico.",
     )
 else:
     mantieni_contributi_azienda = True  # nessun cambio CCNL pianificato: irrilevante
 
-# --- NUOVO: Periodi di disoccupazione ----------------------------------------
+# --- Periodi di disoccupazione ------------------------------------------------
 st.sidebar.markdown("**Periodi di disoccupazione**")
 usa_disoccupazione = st.sidebar.checkbox(
     "Inserisci periodi senza reddito", value=False,
@@ -594,8 +439,7 @@ vers_vol_extra = st.sidebar.number_input(
 usa_variazioni_vol_extra = st.sidebar.checkbox(
     "Pianifica variazioni di questo versamento nel tempo", value=False,
     key="usa_var_vol_extra",
-    help="Es.: dall'anno 6 alzi a 1500€, dall'anno 12 abbassi a 800€. Tra una "
-         "variazione e l'altra l'importo resta fisso (nessuno scaling con la carriera).",
+    help="Es.: dall'anno 6 alzi a 1500€, dall'anno 12 abbassi a 800€.",
 )
 variazioni_vol_extra = []
 if usa_variazioni_vol_extra:
@@ -619,9 +463,7 @@ st.sidebar.header("4. Performance simulata (Fondo)")
 st.sidebar.caption(
     "I rendimenti del fondo vengono SEMPRE dal ricampionamento (block-"
     "bootstrap) dello storico mensile reale della quota del comparto — mai "
-    "da un'assunzione parametrica. Usa tutti i mesi disponibili (non solo i "
-    "rendimenti di fine anno), il che dà stime più solide anche per i "
-    "comparti con storico breve."
+    "da un'assunzione parametrica."
 )
 usa_mensile = True  # unico metodo disponibile: block-bootstrap mensile
 block_mesi = st.sidebar.number_input(
@@ -636,13 +478,8 @@ anno_inizio_storico = st.sidebar.slider(
     "Escludi gli anni precedenti a...", ANNO_STORICO_MIN_GLOBALE, ANNO_STORICO_MAX_GLOBALE,
     ANNO_STORICO_MIN_GLOBALE, 1,
     help="Taglia via dallo storico usato per il resampling tutti gli anni "
-         "precedenti a quello scelto. Utile per mitigare il bias da 'punto di "
-         "partenza': un comparto nato subito prima di una crisi (es. 2008) "
-         "mostra spesso un primo rimbalzo enorme che gonfia il rendimento "
-         "medio storico se lo si include. Il valore di default (il più "
-         "vecchio disponibile) NON esclude nulla, cioè usa tutta la storia "
-         "disponibile per ciascun comparto, come comportamento originale. "
-         "Se un comparto parte già dopo l'anno scelto, resta invariato.",
+         "precedenti a quello scelto (mitiga il bias da 'punto di partenza', "
+         "es. rimbalzo post-2008). Default = usa tutta la storia disponibile.",
 )
 if anno_inizio_storico > ANNO_STORICO_MIN_GLOBALE:
     st.sidebar.caption(
@@ -667,8 +504,7 @@ versamento_pac = st.sidebar.number_input(
 usa_variazioni_pac = st.sidebar.checkbox(
     "Pianifica variazioni del versamento PAC nel tempo", value=False,
     key="usa_var_pac",
-    help="Es.: dall'anno 6 alzi a 5000€, dall'anno 12 abbassi a 2000€. Tra una "
-         "variazione e l'altra l'importo resta fisso.",
+    help="Es.: dall'anno 6 alzi a 5000€, dall'anno 12 abbassi a 2000€.",
 )
 variazioni_pac = []
 if usa_variazioni_pac:
@@ -762,11 +598,7 @@ if usa_portafoglio:
         else:
             st.sidebar.caption(f"Somma pesi: {somma_pesi:.1f}% ✓")
 
-    # Stima automatica della quota "titoli di Stato/white list" del
-    # portafoglio, pesata sui ticker con composizione inequivocabile (vedi
-    # QUOTA_TITOLI_STATO_TICKER). Per ticker obbligazionari misti o non
-    # catalogati la quota non è stimabile e resta a 0 finché non la imposti
-    # tu a mano nella sezione tassazione qui sotto.
+    # Stima automatica della quota "titoli di Stato/white list" del portafoglio
     quota_ts_auto = 0.0
     ticker_bond_non_stimabili = []
     ticker_obbligazionari = set(CATALOGO_ETF.get("Obbligazionario", {}).values())
@@ -805,13 +637,9 @@ tassa_uscita_pac = st.sidebar.slider("Tassazione Plusvalenze PAC (%)", 0, 26, 26
 st.sidebar.markdown("**Componente obbligazionaria — tassazione differenziata**")
 usa_tassazione_ts_pac = st.sidebar.checkbox(
     "Applica aliquota ridotta (12,5%) sulla quota in titoli di Stato", value=False,
-    help="In Italia i proventi/plusvalenze di fondi ed ETF armonizzati godono "
-         "di un'aliquota ridotta al 12,5% (anziché il 26% ordinario) sulla "
-         "quota riferibile a titoli di Stato italiani e di paesi white list. "
-         "⚠️ La percentuale ESATTA deve essere certificata dall'emittente del "
-         "fondo (documentazione fiscale annuale): questo è un modello "
-         "SEMPLIFICATO che applica un'aliquota media pesata, non un calcolo "
-         "fiscale definitivo. Non sono un consulente fiscale: verifica sempre "
+    help="Aliquota ridotta al 12,5% sulla quota riferibile a titoli di Stato "
+         "italiani/white list. ⚠️ Modello SEMPLIFICATO (aliquota media pesata): "
+         "la percentuale esatta va certificata dall'emittente. Verifica sempre "
          "con la documentazione ufficiale del tuo strumento.",
 )
 if usa_tassazione_ts_pac:
@@ -819,11 +647,9 @@ if usa_tassazione_ts_pac:
     quota_ts_pac_pct = st.sidebar.slider(
         "Quota del PAC in titoli di Stato/white list (%)", 0.0, 100.0,
         default_quota, 1.0,
-        help="Se usi il portafoglio a ticker, è pre-impostata stimando i soli "
-             "ETF di titoli di Stato puri riconosciuti automaticamente "
-             "(es. Xtrackers Global Government Bond). Per fondi obbligazionari "
-             "MISTI (es. Global Aggregate Bond, che include anche corporate) "
-             "o ticker manuali, correggi tu il valore in base al KID/factsheet.",
+        help="Pre-impostata stimando i soli ETF di titoli di Stato puri "
+             "riconosciuti automaticamente. Per fondi obbligazionari MISTI o "
+             "ticker manuali, correggi tu in base al KID/factsheet.",
     )
     if usa_portafoglio and ticker_bond_non_stimabili:
         st.sidebar.caption(
@@ -939,224 +765,40 @@ def genera_scenari(profilo: str, coeff: float, crescita_base: float,
 
 
 # ---------------------------------------------------------------------------
-# GENERAZIONE TRAIETTORIE DI RENDIMENTO — TUTTE MENSILI (n x durata*12)
+# BLOCK-BOOTSTRAP MENSILE DEL FONDO (resta qui: usa lo storico dei comparti)
 # ---------------------------------------------------------------------------
-# Il motore del montante ora lavora MESE PER MESE: i versamenti vengono
-# spalmati su 12 rate e ogni rata rende solo per i mesi residui. Tutti i
-# generatori quindi restituiscono matrici di rendimenti MENSILI.
-
-@st.cache_data
-def genera_rendimenti_gbm(rend_medio: float, vol: float, durata: int,
-                          n: int = 200, seed: int = 7):
-    """
-    GBM lognormale MENSILE. `rend_medio` e `vol` restano parametri ANNUI
-    (come esposti in sidebar); vengono convertiti in parametri mensili
-    (media geometrica mensile, vol/sqrt(12)). Ritorna (n x durata*12).
-    """
-    rng = np.random.default_rng(seed)
-    rend_m = (1 + rend_medio) ** (1 / 12) - 1
-    vol_m = vol / np.sqrt(12)
-    sigma = np.sqrt(np.log(1 + (vol_m**2) / ((1 + rend_m)**2)))
-    mu = np.log(1 + rend_m) - 0.5 * sigma**2
-    shocks = rng.normal(mu, sigma, size=(n, durata * 12))
-    return np.exp(shocks) - 1.0
-
-
-
 @st.cache_data
 def genera_rendimenti_block_bootstrap(serie_mensile: tuple, durata: int,
                                       block: int = 12, n: int = 200, seed: int = 33):
     """
-    BLOCK-BOOTSTRAP MENSILE (Moving Block). Ricampiona blocchi CONTIGUI 
-    di `block` mesi dai rendimenti mensili storici reali del comparto 
+    BLOCK-BOOTSTRAP MENSILE (Moving Block). Ricampiona blocchi CONTIGUI
+    di `block` mesi dai rendimenti mensili storici reali del comparto
     (senza wrap-around) e li concatena fino a coprire `durata` anni.
     """
     serie = np.array(serie_mensile, dtype=float)
     m = serie.size
-    
-    # Se lo storico è più corto del blocco richiesto, non possiamo pescare
+
     if m < block:
         raise ValueError(f"Servono almeno {block} mesi, disponibili {m}.")
-        
+
     rng = np.random.default_rng(seed)
     mesi_tot = durata * 12
     out = np.empty((n, mesi_tot))
     n_blocchi = int(np.ceil(mesi_tot / block))
-    
+
     for s in range(n):
-        # MODIFICA 1: L'indice di partenza casuale deve fermarsi in modo che 
-        # l'ultimo blocco pescabile non superi la lunghezza totale dell'array (m).
-        # rng.integers(low, high) esclude 'high', quindi usiamo m - block + 1.
         start = rng.integers(0, m - block + 1, size=n_blocchi)
-        
-        # MODIFICA 2: Usiamo un semplice slicing [inizio : fine] invece 
-        # dell'operatore modulo (%), evitando così di unire artificialmente 
-        # l'ultimo mese storico col primo.
         path = np.concatenate([serie[st : st + block] for st in start])[:mesi_tot]
-        
         out[s] = path
-        
+
     return out
-
-
-def mensili_ad_annui(mat_mensile: np.ndarray) -> np.ndarray:
-    """Compone una matrice di rendimenti mensili (n x anni*12) in annui (n x anni)."""
-    n, mesi = mat_mensile.shape
-    anni = mesi // 12
-    return np.prod(1 + mat_mensile[:, :anni * 12].reshape(n, anni, 12), axis=2) - 1
-
-
-def rendimento_netto_pac(r, ter_p):
-    """
-    Rendimento netto annuo del PAC al netto del solo TER: a differenza del
-    fondo, il PAC in Italia NON tassa il rendimento anno per anno — la
-    plusvalenza è tassata (26%, o aliquota impostata) solo in uscita/vendita.
-    Questo "netto" è quindi un netto di SOLI COSTI ricorrenti, non di imposta;
-    l'imposta sulla plusvalenza è mostrata separatamente come valore a scadenza.
-    """
-    r = np.asarray(r, dtype=float)
-    return (1 + r) * (1 - ter_p) - 1
-
-
-def seleziona_traiettoria_per_percentile(rendimenti: np.ndarray, percentile: int):
-    montanti = np.prod(1 + rendimenti, axis=1)
-    ordine = np.argsort(montanti)
-    idx = int(round((percentile / 100) * (len(ordine) - 1)))
-    return rendimenti[ordine[idx]]
-
-
-# ---------------------------------------------------------------------------
-# PORTAFOGLIO A TICKER: download storico, stima parametri, Cholesky
-# ---------------------------------------------------------------------------
-def parse_ticker_pesi(tickers_str: str, pesi_str: str):
-    tickers = [t.strip().upper() for t in tickers_str.split(",") if t.strip()]
-    pesi_raw = [p.strip() for p in pesi_str.split(",") if p.strip()]
-    if len(tickers) == 0:
-        raise ValueError("Inserisci almeno un ticker.")
-    if len(pesi_raw) != len(tickers):
-        raise ValueError(f"Hai {len(tickers)} ticker ma {len(pesi_raw)} pesi.")
-    pesi = np.array([float(p) for p in pesi_raw])
-    if pesi.sum() <= 0:
-        raise ValueError("La somma dei pesi deve essere positiva.")
-    pesi = pesi / pesi.sum()
-    return tickers, pesi
-
-
-@st.cache_data(show_spinner=False)
-def scarica_prezzi_mensili(tickers: tuple, anni: int):
-    """
-    Scarica i prezzi mensili AGGIUSTATI (dividendi + split reinvestiti nel
-    prezzo, come farebbe l'Adj Close storico di Yahoo). Fondamentale per
-    qualunque strumento che stacca dividendi (azioni singole, ETF/ETC a
-    distribuzione): senza aggiustamento, ogni stacco appare come un calo di
-    prezzo fittizio, che SOTTOSTIMA il rendimento e SOVRASTIMA la volatilità.
-    Per gli ETF ad accumulazione del catalogo curato non cambia nulla (non
-    distribuiscono), ma è necessario per i ticker manuali (azioni, ETF a
-    distribuzione) che l'app ammette esplicitamente.
-    """
-    import yfinance as yf
-    import pandas as pd
-    from datetime import date
-    from dateutil.relativedelta import relativedelta
-
-    end = date.today()
-    start = end - relativedelta(years=anni)
-
-    serie = {}
-    for t in tickers:
-        data = yf.download(t, start=start.isoformat(), end=end.isoformat(),
-                           progress=False, auto_adjust=True, actions=False)
-        if data is None or data.empty:
-            raise ValueError(f"Nessun dato scaricato per '{t}'. Verifica il ticker su Yahoo.")
-        # Con auto_adjust=True, "Close" È il prezzo aggiustato (equivalente al
-        # vecchio "Adj Close"): dividendi e split già incorporati nel prezzo.
-        if "Close" in data.columns:
-            col_data = data["Close"]
-        else:
-            col_data = data.iloc[:, 0]
-        if isinstance(col_data, pd.DataFrame):
-            col_data = col_data.iloc[:, 0]
-        serie[t] = col_data.resample("ME").last()
-
-    df = pd.DataFrame(serie).dropna()
-    if len(df) < 24:
-        raise ValueError(
-            f"Storico comune troppo corto ({len(df)} mesi): riduci gli anni o "
-            f"verifica i ticker."
-        )
-    return df
-
-
-def stima_parametri_portafoglio(prezzi_df: pd.DataFrame, pesi: np.ndarray):
-    rend_mensili = prezzi_df.pct_change().dropna()
-    media_mensile = rend_mensili.mean().values
-    cov_mensile = rend_mensili.cov().values
-    corr = rend_mensili.corr().values
-    rend_annuo_asset = (1 + media_mensile) ** 12 - 1
-    vol_annua_asset = rend_mensili.std().values * np.sqrt(12)
-    rend_portafoglio = float(np.dot(pesi, rend_annuo_asset))
-    vol_portafoglio = float(np.sqrt(pesi @ (cov_mensile * 12) @ pesi))
-    cov_reg = cov_mensile + np.eye(len(pesi)) * 1e-10
-    L = np.linalg.cholesky(cov_reg)
-    # Serie storica REALE del portafoglio pesato (mese per mese), usata per
-    # mostrare il rendimento netto per anno "storico" nella tabella PAC.
-    rend_mensili_pesato = (rend_mensili.values @ pesi)
-    return {
-        "tickers": list(prezzi_df.columns),
-        "rend_annuo_asset": rend_annuo_asset,
-        "vol_annua_asset": vol_annua_asset,
-        "corr": corr,
-        "media_mensile": media_mensile,
-        "cholesky_mensile": L,
-        "rend_portafoglio": rend_portafoglio,
-        "vol_portafoglio": vol_portafoglio,
-        "n_mesi_storico": len(rend_mensili),
-        "prezzi_df": prezzi_df,
-        "rend_mensili_pesato": rend_mensili_pesato,
-    }
-
-
-@st.cache_data(show_spinner=False)
-def genera_rendimenti_portafoglio_gbm(media_mensile, cholesky_mensile, pesi,
-                                      durata_anni: int, rend_override=None,
-                                      n: int = 200, seed: int = 13):
-    """
-    Traiettorie MENSILI del portafoglio (n x durata*12) con shock correlati
-    (Cholesky). Se rend_override è dato, il drift viene TRASLATO (non scalato)
-    di una costante uguale per tutti gli asset, così da centrare il rendimento
-    atteso del portafoglio sull'override senza mai invertire il segno dei
-    singoli asset (bug del vecchio approccio moltiplicativo quando lo storico
-    era negativo).
-    """
-    rng = np.random.default_rng(seed)
-    n_asset = len(pesi)
-    mesi_tot = durata_anni * 12
-    drift = media_mensile.copy()
-    if rend_override is not None:
-        target_m = (1 + rend_override) ** (1 / 12) - 1        # drift mensile obiettivo (portafoglio)
-        attuale_m = float(np.dot(pesi, drift))                 # drift mensile attuale (portafoglio)
-        drift = drift + (target_m - attuale_m)                 # shift additivo uniforme
-
-    traiettorie = np.zeros((n, mesi_tot))
-    for s in range(n):
-        z = rng.standard_normal((mesi_tot, n_asset))
-        shock_mensili = z @ cholesky_mensile.T
-        rend_mensili_asset = drift + shock_mensili
-        traiettorie[s] = rend_mensili_asset @ pesi
-    return traiettorie
 
 
 # ---------------------------------------------------------------------------
 # COSTRUZIONE DELLO SCHEDULE ANNO-PER-ANNO (livello, CCNL, comparto, disoccup.)
 # ---------------------------------------------------------------------------
 def costruisci_serie_a_gradini(durata: int, base: float, variazioni: list) -> list:
-    """
-    Costruisce una serie annua (lunga `durata`) che parte da `base` e cambia
-    a GRADINI negli anni indicati in `variazioni` (lista di (anno_da, nuovo_importo)).
-    Usata per versamenti (PAC, volontario fondo) che l'utente vuole tenere
-    fissi ma modulare nel tempo: es. base=1000, variazioni=[(6, 1500), (12, 800)]
-    => 1000€ per gli anni 1-5, 1500€ dagli anni 6-11, 800€ dall'anno 12 in poi.
-    """
+    """Serie annua a gradini: parte da `base` e cambia negli anni di `variazioni`."""
     eventi = sorted(variazioni, key=lambda x: x[0])
     serie = []
     corrente = base
@@ -1175,12 +817,9 @@ def costruisci_schedule(durata, ccnl_start, livello_start, comparto_start,
                         premio_annuo, crescita_base, passaggi_livello,
                         cambi_ccnl, anni_disoccupato):
     """
-    Ritorna una lista lunga `durata`. Ogni elemento descrive il CCNL/livello/
-    comparto ATTIVO in quell'anno e i parametri contributivi derivati, così che
-    il motore possa gestire cambi di livello, cambi di CCNL e disoccupazione
-    semplicemente leggendo lo schedule.
+    Lista lunga `durata`: CCNL/livello/comparto attivo in ogni anno e parametri
+    contributivi derivati (gestisce cambi livello, cambi CCNL, disoccupazione).
     """
-    # eventi (anno_da, tipo, payload) applicati cumulativamente
     eventi = []
     for anno_da, liv in passaggi_livello:
         eventi.append((anno_da, "livello", liv))
@@ -1192,7 +831,7 @@ def costruisci_schedule(durata, ccnl_start, livello_start, comparto_start,
     for a in range(durata):
         anno = a + 1
         ccnl_att, liv_att, comp_att = ccnl_start, livello_start, comparto_start
-        anno_ultimo_cambio_ccnl = 0   # 0 = nessun cambio (si parte dal CCNL iniziale)
+        anno_ultimo_cambio_ccnl = 0
         for anno_da, tipo, payload in eventi:
             if anno_da <= anno:
                 if tipo == "livello":
@@ -1201,7 +840,6 @@ def costruisci_schedule(durata, ccnl_start, livello_start, comparto_start,
                     ccnl_att, liv_att, comp_att = payload
                     anno_ultimo_cambio_ccnl = anno_da
         preset_a = CCNL_PRESET[ccnl_att]
-        # comparto di ripiego se il nome non esiste nel nuovo fondo
         if comp_att not in preset_a["comparti"]:
             comp_att = preset_a["comparti"][-1]
 
@@ -1220,26 +858,15 @@ def costruisci_schedule(durata, ccnl_start, livello_start, comparto_start,
         tfr_pct_a = preset_a["tfr_pct"]
         costo_fisso_a = preset_a["costo_fisso"]
 
-        # --- SCATTI DI ANZIANITÀ ---
-        # Regola: gli scatti maturano nel rapporto di lavoro corrente. Un
-        # CAMBIO DI CCNL (cambio azienda/settore) azzera l'anzianità: gli
-        # scatti pregressi e quelli maturati prima del cambio SI PERDONO e si
-        # ricomincia a maturare da zero nel nuovo contratto. I passaggi di
-        # LIVELLO (promozione interna) invece NON azzerano nulla.
-        # Il totale è sempre limitato a scatti_max del CCNL corrente: se parti
-        # con 2 pregressi su max 5, potrai maturarne al più altri 3.
+        # Scatti: un cambio CCNL azzera l'anzianità; un cambio livello no.
         if anno_ultimo_cambio_ccnl == 0:
-            # nessun cambio: pregressi + anzianità simulata
             anni_servizio = anni_pregressi_scatti * freq_a + anno
         else:
-            # anzianità solo dall'anno del cambio in poi (pregressi persi)
             anni_servizio = anno - anno_ultimo_cambio_ccnl + 1
         scatti_maturati = min(max_a, anni_servizio // freq_a)
         base_teorica = minimo_annuo_a + scatti_maturati * scatto_annuo_a
         base_contrib_a = base_teorica * ((1 + crescita_base) ** a)
 
-        # base RAL (anno 1 equivalente del segmento), scalata poi dalla carriera.
-        # Dopo un cambio CCNL gli scatti pregressi spariscono anche dalla RAL.
         scatti_in_ral = anni_pregressi_scatti if anno_ultimo_cambio_ccnl == 0 else 0
         ral_base_eff_a = (minimo_annuo_a + scatti_in_ral * scatto_annuo_a
                           + superminimo_annuo + premio_annuo)
@@ -1268,31 +895,16 @@ def costruisci_schedule(durata, ccnl_start, livello_start, comparto_start,
 def simula_capitale(fattori, rend_fondo_mensili, rend_pac_mensili, sched, scal,
                     vol_extra_serie, vp_serie) -> pd.DataFrame:
     """
-    Simula il montante MESE PER MESE. `rend_fondo_mensili` e `rend_pac_mensili`
-    sono traiettorie di rendimenti mensili lunghe durata*12 (già coerenti con
-    lo schedule dei comparti per il fondo). I versamenti annui vengono divisi
-    in 12 rate: ogni rata rende solo per i mesi residui — coerente con un PAC
-    e con i contributi mensili reali al fondo (fix della sovrastima da
-    versamento "tutto a gennaio").
-
-    `vol_extra_serie` e `vp_serie` sono liste lunghe `durata`: il versamento
-    volontario del fondo e quello del PAC per ciascun anno. Restano FISSI in
-    euro nominali (nessuno scaling automatico con la crescita di carriera);
-    possono però cambiare a gradini se l'utente ha pianificato variazioni.
+    Simula il montante MESE PER MESE (versamenti in 12 rate; ogni rata rende
+    solo per i mesi residui). Vedi commenti nel corpo per il trattamento
+    fiscale del fondo (quota già netta) vs PAC (TER + tassa in uscita).
     """
     ral_override = scal["ral_override"]
     ral_manuale = scal["ral_manuale"]
     ter_p = scal["ter_p"]
-    # Se il rendimento del PAC è GIÀ netto di TER (modalità portafoglio a
-    # ticker: il TER è incorporato nel NAV/prezzo Yahoo), NON va sottratto di
-    # nuovo qui, altrimenti si conta due volte. In modalità "Semplice" invece
-    # lo slider è un rendimento LORDO e il TER va applicato.
     ter_gia_incluso_pac = scal.get("ter_gia_incluso_pac", False)
     tp = scal["tp"] / 100
     quota_ts_pac = scal.get("quota_ts_pac", 0.0)
-    # Aliquota effettiva sulla plusvalenza PAC: 12,5% sulla quota in titoli di
-    # Stato/white list, aliquota ordinaria (tp) sul resto. Se quota_ts_pac=0
-    # (default) equivale esattamente al vecchio comportamento (tp flat).
     tp_eff = tp * (1 - quota_ts_pac) + 0.125 * quota_ts_pac
     rt = scal["rt"]
     tt = scal["tt"] / 100
@@ -1304,11 +916,6 @@ def simula_capitale(fattori, rend_fondo_mensili, rend_pac_mensili, sched, scal,
     versato_pac_cum = float(scal.get("cap_iniziale_pac", 0.0))
     cap_tfr = 0.0
     mantieni_contributi_azienda = scal.get("mantieni_contributi_azienda", True)
-    # Ledger "ombra": segue SOLO la quota del fondo derivata dai contributi
-    # del datore (capitale + rendimento/TER maturati su quella quota), senza
-    # intaccare cap_fondo. Serve unicamente per poter sottrarre esattamente
-    # quella quota da cap_fondo se, a un cambio di CCNL, l'utente ha scelto
-    # di NON trattenerla (vedi opzione in sidebar).
     cap_fondo_azienda_ombra = 0.0
     rows = []
 
@@ -1317,31 +924,23 @@ def simula_capitale(fattori, rend_fondo_mensili, rend_pac_mensili, sched, scal,
         anno = a + 1
         occupato = s["occupato"]
 
-        # Cambio CCNL in questo anno: se l'utente ha scelto di NON trattenere
-        # i contributi già versati dal VECCHIO datore, li sottraiamo dal
-        # montante del fondo (con il loro rendimento/TER maturato) prima di
-        # applicare i contributi di quest'anno. TFR e contributi del
-        # lavoratore restano sempre intatti in entrambi gli scenari.
         if s["cambio_ccnl_qui"] and not mantieni_contributi_azienda:
             cap_fondo = max(0.0, cap_fondo - cap_fondo_azienda_ombra)
             cap_fondo_azienda_ombra = 0.0
 
-        # RAL: override manuale (se attivo) solo mentre si è occupati
         if occupato:
             ral_curr = ral_manuale * f if ral_override else s["ral_base_eff"] * f
         else:
             ral_curr = 0.0
 
-        base_contrib = s["base_contrib"]  # già 0 se disoccupato
+        base_contrib = s["base_contrib"]
 
-        # Importi ANNUI (per la tabella e l'IRPEF)
         tfr_curr = ral_curr * s["tfr_pct"] if occupato else 0.0
         ca_curr = base_contrib * s["ca_pct"]
         vol_min = base_contrib * s["lav_pct"]
         vf_curr = vol_min + (vol_extra_serie[a] if occupato else 0.0)
         vp_curr = vp_serie[a] if occupato else 0.0
 
-        # Deduzione IRPEF (solo se occupato e c'è reddito)
         if occupato and (vf_curr + ca_curr) > 0:
             deducibile = min(vf_curr + ca_curr, LIMITE_DEDUCIBILITA)
             aliq_marg = aliquota_marginale(ral_curr)
@@ -1350,22 +949,9 @@ def simula_capitale(fattori, rend_fondo_mensili, rend_pac_mensili, sched, scal,
         else:
             risparmio_anno = 0.0
 
-        # --- CICLO MENSILE: versamenti in 12 rate, rendimento mese per mese ---
-        # Ogni rata prende solo il rendimento dei mesi RESIDUI dell'anno (fix
-        # della vecchia versione che dava un anno intero di rendimento a tutto
-        # il versamento annuo). Rivalutazione TFR convertita in mensile.
-        #
-        # NB: il rendimento del fondo (rend_fondo_mensili) viene dal
-        # RICAMPIONAMENTO della quota storica reale del comparto. La quota
-        # pubblicata da un fondo pensione negoziale è GIÀ AL NETTO sia
-        # dell'imposta sostitutiva annua 20%/12,5% (che il fondo versa
-        # direttamente, non l'iscritto) sia dei costi di gestione finanziaria
-        # (il fondo li scarica sulla quota, come il NAV di un fondo comune è
-        # già al netto del proprio TER). Applicare QUI un'altra tassa/TER sul
-        # rendimento ricampionato sarebbe un doppio conteggio: il rendimento
-        # storico va quindi usato COSÌ COM'È. L'unico costo aggiuntivo reale,
-        # non incluso nella quota, è il costo fisso amministrativo annuo in
-        # euro (costo_fisso_f), applicato una volta l'anno più sotto.
+        # Rendimenti fondo dalla quota reale: GIÀ netti di tassa annua e
+        # costi di gestione (niente doppio conteggio); resta solo il costo
+        # fisso amministrativo annuo in euro.
         rata_fondo = (vf_curr + tfr_curr + ca_curr) / 12.0
         rata_azienda = ca_curr / 12.0
         rata_pac = vp_curr / 12.0
@@ -1377,30 +963,21 @@ def simula_capitale(fattori, rend_fondo_mensili, rend_pac_mensili, sched, scal,
             r_f = rend_fondo_mensili[a * 12 + mese]
             r_p = rend_pac_mensili[a * 12 + mese]
 
-            # FONDO: versamento a inizio mese, rendimento della quota GIÀ NETTO
             cap_fondo += rata_fondo
             cap_fondo += cap_fondo * r_f
 
-            # Ledger ombra quota-datore: stessa dinamica (stesso comparto),
-            # non tocca cap_fondo — serve solo a sapere quanto vale la quota
-            # datore nel momento di un eventuale cambio CCNL.
             cap_fondo_azienda_ombra += rata_azienda
             cap_fondo_azienda_ombra += cap_fondo_azienda_ombra * r_f
 
-            # PAC: versamento a inizio mese, rendimento, TER (qui sì dovuto:
-            # un ETF non è pre-tassato come i fondi pensione negoziali)
             versato_pac_cum += rata_pac
             cap_pac += rata_pac
             cap_pac *= (1 + r_p) * (1 - ter_p_m)
 
-            # TFR in azienda: accantonamento mensile + rivalutazione mensile
             cap_tfr += rata_tfr
             cap_tfr *= (1 + rt_m)
 
-        # Costo fisso amministrativo del fondo: una volta l'anno
         cap_fondo = max(0.0, cap_fondo - s["costo_fisso_f"])
 
-        # --- Valori netti a uscita ---
         anni_adesione = anni_pregressi + anno
         aliq_uscita = aliquota_uscita_fondo(anni_adesione, ordinaria=uscita_ord)
         netto_fondo = cap_fondo * (1 - aliq_uscita)
@@ -1431,12 +1008,7 @@ def simula_capitale(fattori, rend_fondo_mensili, rend_pac_mensili, sched, scal,
 
 def calcola_bande(fattori, rend_fondo_mat, rend_pac_mat, sched, scal,
                   vol_extra_serie, vp_serie, n_band=200):
-    """
-    Esegue il motore su n_band scenari di RENDIMENTO (carriera fissata alla
-    mediana) e restituisce P10/P50/P90 anno-per-anno per ogni curva. È qui che
-    nasce la banda GBM 10–90 richiesta su TUTTE le curve (Fondo, solo PAC,
-    PAC+TFR, Fondo+PAC).
-    """
+    """P10/P50/P90 anno-per-anno per ogni curva (carriera fissata alla mediana)."""
     curve = ["Fondo Netto (€)", "PAC Netto (€)", "PAC + TFR Netto (€)", "Fondo + PAC Netto (€)"]
     acc = {c: [] for c in curve}
     m = min(n_band, rend_fondo_mat.shape[0], rend_pac_mat.shape[0])
@@ -1481,19 +1053,13 @@ sched = costruisci_schedule(
 N_BAND = 2000
 
 # --- Traiettorie di rendimento del FONDO (per comparto, poi spliced) ---
-# Ogni comparto attivo nello schedule genera una propria matrice (n x durata);
-# la matrice finale prende, colonna per colonna (anno per anno), i rendimenti
-# del comparto attivo in quell'anno. Così un cambio CCNL/comparto a metà
-# carriera cambia davvero il motore di rendimento del fondo.
 comparto_keys = sorted({s["comparto_key"] for s in sched})
-avvisi_corti = []       # comparti con storico mensile relativamente breve
-mancanti = []           # comparti senza dati sufficienti per il resampling
+avvisi_corti = []
+mancanti = []
 mat_per_comparto = {}
-SOGLIA_MESI_CORTI = 60  # meno di 5 anni di mesi: banda P10-P90 poco robusta
+SOGLIA_MESI_CORTI = 60
 for ki, key in enumerate(comparto_keys):
     fondo_k, comp_k = key
-    # seed decorrelato per comparto (evita traiettorie identiche tra comparti
-    # in caso di cambio CCNL/comparto a metà carriera)
     if mensile_disponibile(fondo_k, comp_k):
         serie_full = STORICO_MENSILE[fondo_k][comp_k]
         anni_full = STORICO_MENSILE_ANNI[fondo_k][comp_k]
@@ -1524,8 +1090,7 @@ for a, s in enumerate(sched):
     rend_fondo_mat[:, a * 12:(a + 1) * 12] = \
         mat_per_comparto[s["comparto_key"]][:, a * 12:(a + 1) * 12]
 
-# --- PAC: GBM parametrico / portafoglio ticker ---
-# --- PAC: GBM parametrico / portafoglio ticker ---
+# --- PAC: GBM parametrico / portafoglio ticker (da pac_engine) ---
 portafoglio_info = None
 errore_portafoglio = None
 if usa_portafoglio:
@@ -1572,7 +1137,6 @@ fattori_mediani = [float(np.percentile([s[a] for s in scenari], 50)) for a in ra
 df_main = simula_capitale(fattori_mediani, rend_fondo_sel, rend_pac_sel, sched, scal,
                           vol_extra_serie, vp_serie)
 
-# --- Bande GBM P10–P90 su tutte le curve (carriera fissa alla mediana) ---
 bande = calcola_bande(fattori_mediani, rend_fondo_mat, rend_pac_mat, sched, scal,
                       vol_extra_serie, vp_serie, n_band=N_BAND)
 anni = list(range(1, durata + 1))
@@ -1655,13 +1219,8 @@ Il fondo pensione ha **due costi separati**, entrambi inclusi nella simulazione:
 **Costi di gestione finanziaria e tassazione annua NON compaiono qui separatamente:**
 il rendimento storico usato per la simulazione è quello della **quota reale**
 pubblicata dal fondo per il comparto *{comparto}*, che è **già al netto**
-dell'imposta sostitutiva annua (20% ordinario, 12,5% sulla quota in titoli di
-Stato — pagata dal fondo stesso, non dall'iscritto) e dei costi di gestione
-finanziaria (il TER è già scaricato sulla quota, come il NAV di un fondo
-comune è già al netto delle proprie commissioni). Applicare un'ulteriore
-deduzione qui sarebbe un doppio conteggio: la simulazione usa quindi il
-rendimento storico così com'è, più i due costi sopra che restano a carico
-della posizione individuale.
+dell'imposta sostitutiva annua e dei costi di gestione finanziaria. Applicare
+un'ulteriore deduzione qui sarebbe un doppio conteggio.
 """)
 st.divider()
 
@@ -1671,12 +1230,9 @@ st.divider()
 # ---------------------------------------------------------------------------
 st.subheader(f"📗 Rendimento per anno — {comparto} ({preset['fondo']})")
 st.caption("Rendimento della quota reale del comparto: già al netto di tasse "
-           "e costi di gestione finanziaria (li paga/scarica il fondo stesso "
-           "sulla quota). A sinistra lo storico reale (con lo stesso taglio "
-           "di orizzonte impostato in sidebar, se attivo), a destra la "
-           "previsione dal resampling. Il costo fisso amministrativo annuo "
-           "in euro resta comunque a parte, applicato sulla posizione "
-           "individuale (vedi tabella anno-per-anno più sotto).")
+           "e costi di gestione finanziaria. A sinistra lo storico reale (con "
+           "lo stesso taglio di orizzonte impostato in sidebar, se attivo), a "
+           "destra la previsione dal resampling.")
 
 fondo_sel = preset["fondo"]
 serie_ann_full = STORICO_ANNUALE.get(fondo_sel, {}).get(comparto, [])
@@ -1708,7 +1264,7 @@ if serie_ann_sel:
 else:
     st.info("Storico annuale non disponibile per questo comparto (o azzerato dal taglio impostato).")
 
-# --- Dispersione simulata: 3 numeri di sintesi, NON una tabella anno-per-anno ---
+# --- Dispersione simulata: 3 numeri di sintesi ---
 key_sel = (fondo_sel, comparto)
 if key_sel in mat_per_comparto:
     mat_annua = mensili_ad_annui(mat_per_comparto[key_sel])
@@ -1730,9 +1286,8 @@ st.divider()
 st.subheader("📘 Rendimento netto per anno — PAC")
 st.caption(
     "Netto = dopo TER. A differenza del fondo, il PAC in Italia NON tassa il "
-    "rendimento anno per anno: la plusvalenza si tassa solo in uscita/vendita "
-    "(vedi tabella anno per anno per il valore netto finale). A sinistra lo "
-    "storico reale (solo se hai scelto il portafoglio a ticker), a destra la "
+    "rendimento anno per anno: la plusvalenza si tassa solo in uscita/vendita. "
+    "A sinistra lo storico reale (solo col portafoglio a ticker), a destra la "
     "previsione simulata."
 )
 if usa_tassazione_ts_pac and quota_ts_pac > 0:
@@ -1741,9 +1296,8 @@ if usa_tassazione_ts_pac and quota_ts_pac > 0:
         f"🏛️ Tassazione differenziata attiva: **{quota_ts_pac*100:.0f}%** del PAC "
         f"considerato titoli di Stato/white list (12,5%), il resto a "
         f"{tassa_uscita_pac}%. **Aliquota effettiva sulla plusvalenza: "
-        f"{tp_eff_display:.2f}%** (usata nella tabella anno-per-anno per il "
-        f"valore netto a uscita). Ricorda: è una stima semplificata, non un "
-        f"calcolo fiscale certificato."
+        f"{tp_eff_display:.2f}%**. Stima semplificata, non un calcolo fiscale "
+        f"certificato."
     )
 
 col_c, col_d = st.columns(2)
@@ -1784,9 +1338,6 @@ with col_c:
 
 with col_d:
     st.markdown("**Previsione simulata**")
-    # In modalità portafoglio a ticker i rendimenti sono GIÀ netti di TER
-    # (incorporato nel NAV/prezzo Yahoo): non va ri-sottratto, coerente col
-    # motore. In modalità "Semplice" lo slider è lordo, quindi il TER si toglie.
     _ter_tabella_pac = 0.0 if usa_portafoglio else ter_pac
     net_mat_pac = rendimento_netto_pac(mensili_ad_annui(rend_pac_mat), _ter_tabella_pac)
     df_prev_pac = pd.DataFrame({
@@ -1864,7 +1415,6 @@ if usa_portafoglio:
                  f"Uso GBM di fallback (7% / 15%).")
     else:
         pi = portafoglio_info
-        # Ricontrollo accumulazione/UCITS sui ticker effettivamente usati
         note_acc = []
         for t in pi["tickers"]:
             stato, nota = classifica_ticker(t)
@@ -1873,9 +1423,6 @@ if usa_portafoglio:
         if note_acc:
             st.warning("Verifica accumulazione/UCITS:\n\n" + "\n\n".join(note_acc))
 
-        # Avviso basato sui DATI: asset con volatilità annua alta (tipico di
-        # azioni singole) rendono la stima storica poco affidabile e allargano
-        # molto la banda P10-P90.
         SOGLIA_VOL_ALTA = 0.25
         vol_alte = [
             f"**{t}** ({v*100:.0f}%/anno)"
@@ -1886,10 +1433,7 @@ if usa_portafoglio:
             st.warning(
                 "🎢 **Alta volatilità rilevata** per: " + ", ".join(vol_alte) +
                 f" (soglia {SOGLIA_VOL_ALTA*100:.0f}%). Tipico di azioni singole "
-                "o ETF settoriali/leva: rendimento e rischio stimati da un solo "
-                "titolo sono poco affidabili e possono compromettere l'analisi "
-                "di lungo periodo. Considera un peso ridotto o un ETF "
-                "diversificato, e valuta con prudenza la banda P10–P90."
+                "o ETF settoriali/leva: valuta con prudenza la banda P10–P90."
             )
 
         pc1, pc2, pc3 = st.columns(3)
@@ -1954,14 +1498,12 @@ def aggiungi_banda(b, colore_fill, nome):
         showlegend=True,
     ))
 
-# Bande P10–P90 su tutte le curve principali
 aggiungi_banda(b_fondo,  "rgba(42,120,214,0.12)", "Fondo P10–P90")
 aggiungi_banda(b_pactfr, "rgba(27,175,122,0.12)", "PAC+TFR P10–P90")
 aggiungi_banda(b_pac,    "rgba(155,89,182,0.10)", "Solo PAC P10–P90")
 if usa_entrambi:
     aggiungi_banda(b_fpac, "rgba(237,161,0,0.10)", "Fondo+PAC P10–P90")
 
-# Linee centrali (percentile scelto)
 fig.add_trace(go.Scatter(x=anni, y=df_main["Fondo Netto (€)"], name="Fondo Pensione",
                          line=dict(color="#2a78d6", width=3)))
 fig.add_trace(go.Scatter(x=anni, y=df_main["PAC + TFR Netto (€)"], name="PAC + TFR",
@@ -1983,13 +1525,9 @@ st.plotly_chart(fig, use_container_width=True)
 st.divider()
 st.subheader(f"🔎 Rendimento annuo del fondo nello scenario scelto — P{percentile_perf}")
 st.caption(
-    "Questa tabella traduce lo slider del percentile in numeri concreti: mostra "
-    "il rendimento del fondo **anno per anno** lungo la traiettoria P"
-    f"{percentile_perf} (la stessa disegnata come linea centrale nel grafico). "
-    "Cambiando il percentile in sidebar, cambiano questi rendimenti. Nota bene: "
-    "è già al netto dell'imposta sostitutiva annua (dentro la quota); NON è "
-    "ancora applicata la tassa di USCITA (9–23%), che colpisce solo il montante "
-    "finale."
+    "Rendimento del fondo anno per anno lungo la traiettoria P"
+    f"{percentile_perf} (la linea centrale del grafico). Già netto "
+    "dell'imposta sostitutiva annua; NON ancora applicata la tassa di USCITA."
 )
 
 _rend_annui_fondo = np.prod(1 + rend_fondo_sel.reshape(durata, 12), axis=1) - 1
@@ -2040,11 +1578,9 @@ st.dataframe(df_main[cols_show].style.format(fmt), use_container_width=True, hei
 
 st.caption(
     "⚠️ Stima illustrativa. Crescita salariale su dati ISTAT; contributi CCNL "
-    "Cometa/Fon.Te; rendimenti del fondo dal ricampionamento (block-bootstrap) "
-    "dello storico reale della quota, già al netto di tasse e costi di "
-    "gestione; PAC simulato con GBM (parametrico o da portafoglio ticker). La "
-    "banda P10–P90 riflette l'incertezza dei rendimenti, non quella di "
-    "carriera. Non è consulenza finanziaria o previdenziale."
+    "Cometa/Fon.Te; rendimenti del fondo dal ricampionamento dello storico "
+    "reale della quota; PAC simulato con GBM (parametrico o da portafoglio "
+    "ticker). Non è consulenza finanziaria o previdenziale."
 )
 st.divider()
 
@@ -2066,10 +1602,13 @@ _ctx_backtest = {
     "cap_iniziale_pac": capitale_iniziale_pac,
 }
 
-_tab_pv, _tab_motore = st.tabs(
-    ["📈 Backtest (growth asset)", "🏦 Backtest via motore (TFR/IRPEF)"]
+_tab_pv, _tab_motore, _tab_pav = st.tabs(
+    ["📈 Backtest (growth asset)", "🏦 Backtest via motore (TFR/IRPEF)",
+     "🧪 PAC avanzato"]
 )
 with _tab_pv:
     render_backtest_tab(_ctx_backtest)
 with _tab_motore:
     render_backtest_via_motore(_ctx_backtest)
+with _tab_pav:
+    render_pac_avanzato(_ctx_backtest)
