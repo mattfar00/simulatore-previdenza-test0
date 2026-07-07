@@ -1472,7 +1472,7 @@ sched = costruisci_schedule(
     anni_disoccupato,
 )
 
-N_BAND = 200
+N_BAND = 10000
 
 # --- Traiettorie di rendimento del FONDO (per comparto, poi spliced) ---
 # Ogni comparto attivo nello schedule genera una propria matrice (n x durata);
