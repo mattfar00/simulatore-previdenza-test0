@@ -959,26 +959,35 @@ def genera_rendimenti_gbm(rend_medio: float, vol: float, durata: int,
 def genera_rendimenti_block_bootstrap(serie_mensile: tuple, durata: int,
                                       block: int = 12, n: int = 200, seed: int = 33):
     """
-    BLOCK-BOOTSTRAP MENSILE. Ricampiona blocchi CONTIGUI di `block` mesi dai
-    rendimenti mensili storici reali del comparto (bootstrap circolare, con
-    wrap-around) e li concatena fino a coprire `durata` anni.
-
-    Rispetto al bootstrap annuale iid, preserva la struttura temporale interna
-    (autocorrelazione, sequenze di mesi buoni/cattivi) e sfrutta MOLTE più
-    osservazioni. Ritorna direttamente i rendimenti MENSILI (n x durata*12).
+    BLOCK-BOOTSTRAP MENSILE (Moving Block). Ricampiona blocchi CONTIGUI 
+    di `block` mesi dai rendimenti mensili storici reali del comparto 
+    (senza wrap-around) e li concatena fino a coprire `durata` anni.
     """
     serie = np.array(serie_mensile, dtype=float)
     m = serie.size
+    
+    # Se lo storico è più corto del blocco richiesto, non possiamo pescare
     if m < block:
         raise ValueError(f"Servono almeno {block} mesi, disponibili {m}.")
+        
     rng = np.random.default_rng(seed)
     mesi_tot = durata * 12
     out = np.empty((n, mesi_tot))
     n_blocchi = int(np.ceil(mesi_tot / block))
+    
     for s in range(n):
-        start = rng.integers(0, m, size=n_blocchi)
-        path = np.concatenate([serie[(st + np.arange(block)) % m] for st in start])[:mesi_tot]
+        # MODIFICA 1: L'indice di partenza casuale deve fermarsi in modo che 
+        # l'ultimo blocco pescabile non superi la lunghezza totale dell'array (m).
+        # rng.integers(low, high) esclude 'high', quindi usiamo m - block + 1.
+        start = rng.integers(0, m - block + 1, size=n_blocchi)
+        
+        # MODIFICA 2: Usiamo un semplice slicing [inizio : fine] invece 
+        # dell'operatore modulo (%), evitando così di unire artificialmente 
+        # l'ultimo mese storico col primo.
+        path = np.concatenate([serie[st : st + block] for st in start])[:mesi_tot]
+        
         out[s] = path
+        
     return out
 
 
