@@ -5,14 +5,32 @@
 #     render_pac_avanzato(ctx)
 # da chiamare in un tab dell'app principale. NON tocca il motore esistente.
 #
+# PRINCIPIO GUIDA: nessun parametro di rendimento/rischio e' inventato o
+# lasciato a uno slider manuale. Sia il bootstrap che il GBM-Cholesky
+# stimano mu/sigma/rho dagli STESSI dati storici scaricati da Yahoo Finance
+# per il portafoglio ticker gia' configurato nella sidebar del PAC (sezione
+# "5. PAC (ETF)" > "Portafoglio ticker"). L'utente sceglie solo la
+# METODOLOGIA di ricampionamento (bootstrap vs parametrico), mai i numeri.
+#
 # Caratteristiche:
+# - Richiede il portafoglio a ticker configurato in sidebar (stessa fonte
+#   dati di tutto il resto dell'app). Se non e' presente, il tab spiega come
+#   attivarlo e si ferma: NIENTE fallback su assunzioni parametriche a mano.
+# - I ticker vengono classificati Azionario/Obbligazionario (preselezione
+#   automatica in base al nome, correggibile) e da li' si costruiscono due
+#   serie mensili aggregate (equal-weight) usate per stimare mu, sigma, rho.
 # - Motore Monte Carlo SELEZIONABILE:
 #     a) Block-bootstrap storico congiunto (blocco in mesi selezionabile,
 #        ricampiona le due serie con gli STESSI indici -> preserva la
 #        correlazione empirica azionario/obbligazionario)
 #     b) GBM multivariato con decomposizione di CHOLESKY sulla matrice di
-#        correlazione, parametri mu/sigma/rho in stile MARKOWITZ:
-#        sigma_p^2 = we^2*se^2 + wb^2*sb^2 + 2*we*wb*rho*se*sb
+#        correlazione, parametri mu/sigma/rho STIMATI dai dati (stile
+#        MARKOWITZ: sigma_p^2 = we^2*se^2 + wb^2*sb^2 + 2*we*wb*rho*se*sb).
+#        E' disponibile un correttivo OPZIONALE (spento di default) solo sul
+#        rendimento atteso — mai su volatilita'/correlazione — perche' la
+#        media storica e' un cattivo stimatore del rendimento futuro, mentre
+#        vol/correlazione sono stime molto piu' robuste: stesso principio
+#        gia' usato altrove nell'app per il PAC a ticker.
 # - MEAN REVERSION (solo GBM): richiamo tipo Ornstein-Uhlenbeck del
 #   log-rendimento cumulato verso il trend di lungo periodo (kappa/anno).
 # - DERISKING (glidepath lineare): quota azionaria da w_iniziale a w_finale
@@ -271,6 +289,38 @@ def render_pac_avanzato(ctx):
     cap_iniziale = float(ctx.get("cap_iniziale_pac", 0.0))
     seed = int(st.session_state.get("master_seed", 33))
 
+    # --- Precondizione: serve il portafoglio ticker gia' scaricato da Yahoo --
+    # Nessun fallback parametrico "inventato": se manca, il tab si ferma qui
+    # e spiega come attivarlo, invece di proporre numeri a caso.
+    stima = classifica_e_stima(ctx)
+    if stima is None:
+        st.warning(
+            "⚠️ Questo modulo calcola TUTTI i parametri (rendimento, "
+            "volatilità, correlazione) dai prezzi reali di Yahoo Finance — "
+            "non propone assunzioni manuali. Configura prima il portafoglio "
+            "in sidebar: **5. PAC (ETF)** → modalità **'Portafoglio ticker "
+            "(dati storici)'**, seleziona almeno un ETF azionario e uno "
+            "obbligazionario (es. dal catalogo, categoria 'Obbligazionario'), "
+            "poi torna su questo tab."
+        )
+        return
+
+    serie_e, serie_b = stima["serie_e"], stima["serie_b"]
+    mu_e, sig_e, mu_b, sig_b, rho = (stima["mu_e"], stima["sig_e"],
+                                     stima["mu_b"], stima["sig_b"], stima["rho"])
+
+    st.caption(
+        f"📊 Parametri stimati da **{stima['n_mesi']} mesi** di storico Yahoo — "
+        f"azionario: {', '.join(stima['tickers_azionari'])} · "
+        f"obbligazionario: {', '.join(stima['tickers_obblig'])}"
+    )
+    e1, e2, e3, e4, e5 = st.columns(5)
+    e1.metric("μ Azionario", f"{mu_e*100:+.2f}%")
+    e2.metric("σ Azionario", f"{sig_e*100:.2f}%")
+    e3.metric("μ Obbligaz.", f"{mu_b*100:+.2f}%")
+    e4.metric("σ Obbligaz.", f"{sig_b*100:.2f}%")
+    e5.metric("ρ (correlazione)", f"{rho:+.2f}")
+
     c1, c2, c3 = st.columns(3)
 
     # --- Motore Monte Carlo -------------------------------------------------
@@ -280,9 +330,23 @@ def render_pac_avanzato(ctx):
             "Generatore dei rendimenti", 
             ["GBM multivariato (Cholesky)", "Block-bootstrap storico"],
             key="pav_motore",
+            help="**GBM-Cholesky**: genera rendimenti CASUALI da mu/sigma/rho "
+                 "stimati sopra (assume che i rendimenti seguano una "
+                 "distribuzione log-normale). **Block-bootstrap**: invece di "
+                 "generare numeri, RIPESCA a blocchi mesi realmente accaduti "
+                 "dallo storico Yahoo — non assume nessuna distribuzione "
+                 "teorica, ma è limitato ai pattern già visti in passato "
+                 "(es. non genera mai un crollo peggiore del peggiore "
+                 "storico).",
         )
         usa_bootstrap = motore.startswith("Block")
-        n_scen = st.slider("Numero scenari", 200, 2000, 500, 100, key="pav_n")
+        n_scen = st.slider(
+            "Numero scenari", 200, 2000, 500, 100, key="pav_n",
+            help="Quante traiettorie Monte Carlo simulare. Più scenari = "
+                 "stime P10/P50/P90 più stabili ma calcolo più lento. 500 è "
+                 "un buon compromesso; alza a 1500-2000 per un risultato "
+                 "finale più preciso.",
+        )
         if usa_bootstrap:
             block = st.number_input(
                 "Lunghezza blocco (mesi)", 3, 36, 12, 1, key="pav_block",
@@ -298,40 +362,134 @@ def render_pac_avanzato(ctx):
                      "cumulato verso il trend di lungo periodo (stile O-U): "
                      "riduce la probabilita' di scenari estremi persistenti.",
             )
-            block = 12
 
-    # --- Parametri Markowitz / storico ---------------------------------------
+    # --- Correttivo opzionale (solo sul rendimento atteso, spento di default) -
     with c2:
-        st.markdown("**Asset (Markowitz)**")
+        st.markdown("**Correttivo (opzionale)**")
         if usa_bootstrap:
-            serie_e, serie_b, fonte = _serie_storiche_bootstrap(ctx)
-            st.caption(fonte)
-            mu_e = sig_e = mu_b = sig_b = rho = None
-        else:
-            mu_e = st.slider("Rend. atteso Azionario (%)", 0.0, 12.0, 6.5, 0.1, key="pav_mue") / 100
-            sig_e = st.slider("Volatilità Azionario (%)", 5.0, 30.0, 15.0, 0.5, key="pav_sige") / 100
-            mu_b = st.slider("Rend. atteso Obbligaz. (%)", 0.0, 8.0, 2.5, 0.1, key="pav_mub") / 100
-            sig_b = st.slider("Volatilità Obbligaz. (%)", 1.0, 15.0, 5.0, 0.5, key="pav_sigb") / 100
-            rho = st.slider(
-                "Correlazione ρ azionario-obbligaz.", -0.9, 0.9, 0.10, 0.05, key="pav_rho",
-                help="Entra nella covarianza alla Markowitz: cov = ρ·σe·σb. "
-                     "Storicamente oscilla tra circa -0,3 e +0,4.",
+            st.caption(
+                "Non disponibile col motore Block-bootstrap: lì i rendimenti "
+                "sono ripescati direttamente dallo storico, non c'è un "
+                "parametro mu da correggere. Passa a 'GBM multivariato' per "
+                "usarlo."
             )
-            serie_e = serie_b = None
+            override_on = False
+        else:
+            st.caption(
+                "Spento di default: uso i valori stimati sopra. La media "
+                "storica e' un cattivo stimatore del rendimento futuro — se "
+                "vuoi puoi correggerla a mano, ma volatilità e correlazione "
+                "restano SEMPRE quelle stimate dai dati (stesso principio "
+                "del PAC a ticker)."
+            )
+            override_on = st.checkbox(
+                "Correggi a mano il rendimento atteso", value=False, key="pav_override",
+                help="Attivalo solo se hai una view specifica sul futuro (es. "
+                     "'mi aspetto meno crescita azionaria dei prossimi anni "
+                     "rispetto agli ultimi X anni di storico'). Cambia SOLO il "
+                     "centro (mu) della distribuzione simulata: la forma della "
+                     "dispersione (sigma, rho) resta quella osservata nei dati.",
+            )
+            if override_on:
+                mu_e = st.slider(
+                    "Rend. atteso Azionario corretto (%)", 0.0, 12.0,
+                    round(mu_e * 100, 1), 0.1, key="pav_mue_ov",
+                    help="Sostituisce il mu azionario stimato sopra in TUTTI "
+                         "gli scenari generati da qui in poi.",
+                ) / 100
+                mu_b = st.slider(
+                    "Rend. atteso Obbligaz. corretto (%)", 0.0, 8.0,
+                    round(mu_b * 100, 1), 0.1, key="pav_mub_ov",
+                    help="Come sopra, ma per il bucket obbligazionario.",
+                ) / 100
 
     # --- Allocazione, derisking, ribilanciamento -----------------------------
     with c3:
         st.markdown("**Allocazione & derisking**")
-        w0 = st.slider("Quota azionaria iniziale (%)", 0, 100, 80, 5, key="pav_w0") / 100
-        w1 = st.slider("Quota azionaria finale (%)", 0, 100, 40, 5, key="pav_w1") / 100
-        a0 = st.number_input("Derisking: dall'anno", 1, durata, max(1, durata - 10), key="pav_a0")
-        a1 = st.number_input("Derisking: fino all'anno", int(a0), durata, durata, key="pav_a1")
+        st.caption(
+            "Qui NON stimo nulla dai dati: quanto rischio prendere è una "
+            "scelta di policy personale, non un fatto statistico. Il "
+            "**derisking** (o *glidepath*) è la prassi di ridurre "
+            "gradualmente la quota azionaria mano a mano che ci si avvicina "
+            "al momento di iniziare a prelevare, per limitare il "
+            "*sequence-of-returns risk*: un crollo di mercato proprio negli "
+            "ultimi anni di accumulo/primi di decumulo costringe a vendere "
+            "quote a prezzi bassi, un danno che il tempo poi non recupera "
+            "più (a differenza di un crollo a inizio carriera, che il PAC "
+            "assorbe comprando a sconto per anni)."
+        )
+        eta_rif = st.number_input(
+            "Età attuale (opzionale, solo per il suggerimento sotto)",
+            0, 100, 0, 1, key="pav_eta",
+            help="Se la imposti, sotto vedi cosa suggerirebbe la regola "
+                 "pratica 'quota obbligazionaria ≈ età' (una convenzione "
+                 "diffusa in finanza personale, non una legge: è un punto "
+                 "di partenza da adattare alla tua tolleranza al rischio).",
+        )
+        if eta_rif > 0:
+            sugg_w0 = max(0.0, min(1.0, 1 - eta_rif / 100))
+            sugg_w1 = max(0.0, min(1.0, 1 - (eta_rif + durata) / 100))
+            st.caption(
+                f"💡 Regola pratica 'quota obbligazionaria ≈ età': oggi "
+                f"suggerirebbe **{sugg_w0*100:.0f}%** azionario, a fine "
+                f"accumulo (tra {durata} anni, età {eta_rif+durata}) "
+                f"**{sugg_w1*100:.0f}%** azionario. Puoi impostare questi "
+                f"valori sotto o ignorarli."
+            )
+        w0 = st.slider(
+            "Quota azionaria iniziale (%)", 0, 100, 80, 5, key="pav_w0",
+            help="Allocazione azionaria a inizio simulazione. Più alta = più "
+                 "crescita attesa nel lungo periodo ma oscillazioni più "
+                 "ampie anno per anno. 80% è un valore tipico per un "
+                 "orizzonte lungo (accumulo appena iniziato).",
+        ) / 100
+        w1 = st.slider(
+            "Quota azionaria finale (%)", 0, 100, 40, 5, key="pav_w1",
+            help="Allocazione azionaria raggiunta alla fine della rampa (e "
+                 "mantenuta per tutto l'eventuale decumulo). Più bassa = "
+                 "meno crescita attesa ma meno rischio di dover vendere in "
+                 "perdita quando inizi a prelevare. 40% è un livello "
+                 "prudenziale tipico in prossimità della pensione.",
+        ) / 100
+        a0 = st.number_input(
+            "Derisking: dall'anno", 1, durata, max(1, durata - 10), key="pav_a0",
+            help="Anno di simulazione in cui INIZIA la riduzione graduale "
+                 "della quota azionaria (1 = subito, primo anno).",
+        )
+        a1 = st.number_input(
+            "Derisking: fino all'anno", int(a0), durata, durata, key="pav_a1",
+            help="Anno in cui la rampa TERMINA: da qui la quota resta fissa "
+                 "al valore finale impostato sopra, anche durante il "
+                 "decumulo. Deve essere ≥ dell'anno di inizio.",
+        )
+        _w_preview = glidepath_mensile(durata * 12, w0, w1, int(a0), int(a1))
+        _fig_glide = go.Figure()
+        _fig_glide.add_trace(go.Scatter(
+            x=list(np.arange(1, durata * 12 + 1) / 12.0), y=_w_preview * 100,
+            line=dict(color="#2a78d6", width=3), name="Quota azionaria",
+            fill="tozeroy", fillcolor="rgba(42,120,214,0.10)",
+        ))
+        _fig_glide.update_layout(
+            height=180, margin=dict(l=10, r=10, t=10, b=30),
+            xaxis_title="Anni", yaxis_title="% azionario",
+            yaxis_range=[0, 100], showlegend=False,
+        )
+        st.plotly_chart(_fig_glide, use_container_width=True,
+                        config={"displayModeBar": False})
 
     d1, d2, d3 = st.columns(3)
 
     with d1:
         st.markdown("**Ribilanciamento**")
-        reb_attivo = st.checkbox("Ribilancia periodicamente", True, key="pav_reb")
+        reb_attivo = st.checkbox(
+            "Ribilancia periodicamente", True, key="pav_reb",
+            help="Se attivo, ogni N mesi riporta i pesi azionario/"
+                 "obbligazionario al target del glidepath, vendendo il "
+                 "bucket sovrappesato. Se disattivo, il portafoglio 'deriva' "
+                 "liberamente in base a come si muovono i mercati (nessuna "
+                 "vendita, nessuna tassa sul realizzato in fase di "
+                 "accumulo).",
+        )
         reb_ogni = st.number_input(
             "Ogni quanti mesi", 1, 60, 12, 1, key="pav_rebm",
             help="Riporta i pesi al target del glidepath in base al valore "
@@ -364,8 +522,20 @@ def render_pac_avanzato(ctx):
             "Costo d'acquisto (%/ordine)", 0.0, 2.0, 0.0, 0.05, key="pav_cpct",
             help="Commissione percentuale su ogni rata mensile. Default 0.",
         ) / 100
-        bollo_on = st.checkbox("Imposta di bollo 0,2%/anno", True, key="pav_bollo")
-        aliq = st.slider("Aliquota plusvalenze (%)", 0, 26, 26, key="pav_aliq")
+        bollo_on = st.checkbox(
+            "Imposta di bollo 0,2%/anno", True, key="pav_bollo",
+            help="Imposta di bollo italiana sui prodotti finanziari (0,2% "
+                 "annuo sul controvalore del portafoglio, applicata qui "
+                 "pro-rata ogni mese). Si applica a conti titoli/ETF; "
+                 "disattivala solo se sai che nel tuo caso non si applica.",
+        )
+        aliq = st.slider(
+            "Aliquota plusvalenze (%)", 0, 26, 26, key="pav_aliq",
+            help="Aliquota ordinaria italiana sulle plusvalenze da ETF "
+                 "armonizzati: 26%. Si applica solo alla PARTE di plusvalenza "
+                 "quando vendi (ribilanciamento o prelievo in decumulo), non "
+                 "sull'intero importo venduto.",
+        )
         bond_125 = st.checkbox(
             "12,5% sul bucket obbligazionario", False, key="pav_b125",
             help="Approssimazione: tratta l'obbligazionario come titoli di "
@@ -375,9 +545,22 @@ def render_pac_avanzato(ctx):
 
     with d3:
         st.markdown("**Decumulo & inflazione**")
-        decumulo = st.checkbox("Aggiungi fase di decumulo", True, key="pav_dec")
-        anni_dec = st.number_input("Anni di decumulo", 1, 40, 25, 1,
-                                   key="pav_decanni", disabled=not decumulo)
+        decumulo = st.checkbox(
+            "Aggiungi fase di decumulo", True, key="pav_dec",
+            help="Se attivo, dopo gli anni di accumulo il PAC entra in una "
+                 "fase di prelievo mensile: niente più versamenti, si vende "
+                 "invece per generare una rendita. Se disattivo, la "
+                 "simulazione si ferma alla fine dell'accumulo (solo "
+                 "montante finale, nessun prelievo).",
+        )
+        anni_dec = st.number_input(
+            "Anni di decumulo", 1, 40, 25, 1, key="pav_decanni",
+            disabled=not decumulo,
+            help="Durata della fase di prelievo, es. dagli anni di pensione "
+                 "fino all'aspettativa di vita attesa. Più lunga = prelievo "
+                 "totale maggiore da coprire, quindi probabilità di "
+                 "successo più bassa a parità di montante.",
+        )
         prelievo0 = st.number_input(
             "Prelievo mensile LORDO (€)", 0.0, 20000.0, 1500.0, 50.0,
             key="pav_prel", disabled=not decumulo,
@@ -417,10 +600,6 @@ def render_pac_avanzato(ctx):
 
     try:
         if usa_bootstrap:
-            if serie_e is None or serie_b is None:
-                st.error("Bootstrap non disponibile: servono serie storiche per "
-                         "entrambi gli asset (vedi nota sopra). Passa al motore GBM.")
-                return
             paths = genera_bootstrap_congiunto(serie_e, serie_b, mesi_tot,
                                                n_scen, int(block), seed + 500)
         else:
@@ -509,57 +688,67 @@ def render_pac_avanzato(ctx):
 
 
 # ---------------------------------------------------------------------------
-# SERIE STORICHE PER IL BOOTSTRAP (da portafoglio ticker o storico fondo)
+# SERIE STORICHE E PARAMETRI STIMATI DAL PORTAFOGLIO TICKER (Yahoo Finance)
 # ---------------------------------------------------------------------------
-def _serie_storiche_bootstrap(ctx):
+def classifica_e_stima(ctx):
     """
-    Ricava due serie mensili allineate per il bootstrap congiunto:
-    1) Se il portafoglio a ticker e' caricato: l'utente classifica i ticker
-       in Azionario/Obbligazionario e le serie di classe sono le medie
-       equal-weight dei rendimenti mensili dei ticker di ciascuna classe.
-    2) Altrimenti prova a usare lo storico del fondo negoziale (comparto
-       azionario/garantito) come proxy, se disponibile nel ctx.
-    Ritorna (serie_e, serie_b, nota) — serie None se non disponibili.
+    Unica fonte di verita' per ENTRAMBI i motori Monte Carlo: nessun numero
+    e' inventato, tutto arriva dal portafoglio ticker gia' scaricato da
+    Yahoo Finance in sidebar (ctx["portafoglio_info"]["prezzi_df"]).
+
+    1) L'utente classifica i ticker in Azionario/Obbligazionario (preseleziona
+       automaticamente in base al nome, es. "bond"/"obblig"/"government").
+    2) Le due serie mensili di classe sono le medie equal-weight dei
+       rendimenti mensili dei ticker di ciascun bucket.
+    3) Da queste due serie si stimano mu, sigma (annualizzati) e rho
+       (correlazione), esattamente come stima_parametri_portafoglio fa per
+       il PAC "Semplice" — stessa metodologia, stessa fonte dati.
+
+    Ritorna un dict con serie_e, serie_b (mensili, per il bootstrap) e
+    mu_e, sig_e, mu_b, sig_b, rho, n_mesi (per il GBM-Cholesky), oppure
+    None se il portafoglio ticker non e' disponibile/valido — in quel caso
+    il chiamante deve fermarsi, NON deve inventare parametri di ripiego.
     """
     pi = ctx.get("portafoglio_info")
-    if pi is not None and "prezzi_df" in pi:
-        prezzi = pi["prezzi_df"]
-        rend = prezzi.pct_change().dropna()
-        tickers = list(rend.columns)
-        nomi = ctx.get("ticker_to_nome", {})
-        etichette = [f"{t} — {nomi.get(t, t)}" for t in tickers]
-        default_bond = [e for e, t in zip(etichette, tickers)
-                        if any(k in nomi.get(t, "").lower()
-                               for k in ("bond", "obblig", "aggregate", "government"))]
-        sel = st.multiselect(
-            "Ticker OBBLIGAZIONARI (gli altri contano come azionari)",
-            etichette, default=default_bond, key="pav_bondsel",
-        )
-        bond_idx = [etichette.index(e) for e in sel]
-        eq_idx = [i for i in range(len(tickers)) if i not in bond_idx]
-        if not eq_idx or not bond_idx:
-            return None, None, ("⚠️ Servono ALMENO un ticker azionario e uno "
-                                "obbligazionario nel portafoglio per il "
-                                "bootstrap a 2 asset.")
-        serie_e = rend.iloc[:, eq_idx].mean(axis=1).values
-        serie_b = rend.iloc[:, bond_idx].mean(axis=1).values
-        return serie_e, serie_b, (f"Storico da portafoglio ticker: "
-                                  f"{len(serie_e)} mesi comuni.")
+    if pi is None or "prezzi_df" not in pi:
+        return None
 
-    # fallback: storico del fondo negoziale come proxy
-    storico = ctx.get("storico_mensile", {})
-    fondo = ctx.get("fondo")
-    comparti = storico.get(fondo, {})
-    az = next((c for c in comparti if "azion" in c.lower() or "dinam" in c.lower()
-               or "svilupp" in c.lower() or "crescit" in c.lower()), None)
-    ob = next((c for c in comparti if "garant" in c.lower() or "conserv" in c.lower()
-               or "monet" in c.lower()), None)
-    if az and ob:
-        se, sb = comparti[az], comparti[ob]
-        m = min(len(se), len(sb))
-        return (np.asarray(se[-m:]), np.asarray(sb[-m:]),
-                f"⚠️ Proxy dallo storico del fondo {fondo}: '{az}' come "
-                f"azionario, '{ob}' come obbligazionario ({m} mesi). Per un "
-                f"bootstrap su ETF reali, carica il portafoglio a ticker.")
-    return None, None, ("⚠️ Nessuna serie storica disponibile: carica il "
-                        "portafoglio a ticker in sidebar oppure usa il motore GBM.")
+    prezzi = pi["prezzi_df"]
+    rend = prezzi.pct_change().dropna()
+    tickers = list(rend.columns)
+    nomi = ctx.get("ticker_to_nome", {})
+    etichette = [f"{t} — {nomi.get(t, t)}" for t in tickers]
+    default_bond = [e for e, t in zip(etichette, tickers)
+                    if any(k in nomi.get(t, "").lower()
+                           for k in ("bond", "obblig", "aggregate", "government"))]
+    sel = st.multiselect(
+        "Ticker OBBLIGAZIONARI del tuo portafoglio (gli altri contano come "
+        "azionari)", etichette, default=default_bond, key="pav_bondsel",
+        help="Preselezione automatica in base al nome dello strumento. "
+             "Correggi se necessario: la classificazione determina le due "
+             "serie usate per stimare mu/sigma/rho, per ENTRAMBI i motori.",
+    )
+    bond_idx = [etichette.index(e) for e in sel]
+    eq_idx = [i for i in range(len(tickers)) if i not in bond_idx]
+    if not eq_idx or not bond_idx:
+        st.warning("⚠️ Servono ALMENO un ticker azionario e uno obbligazionario "
+                   "nel portafoglio per il modello a 2 asset.")
+        return None
+
+    serie_e = rend.iloc[:, eq_idx].mean(axis=1).values
+    serie_b = rend.iloc[:, bond_idx].mean(axis=1).values
+    m = min(len(serie_e), len(serie_b))
+    serie_e, serie_b = serie_e[-m:], serie_b[-m:]
+
+    mu_e = float((1.0 + serie_e.mean()) ** 12 - 1.0)
+    mu_b = float((1.0 + serie_b.mean()) ** 12 - 1.0)
+    sig_e = float(serie_e.std(ddof=1) * np.sqrt(12.0))
+    sig_b = float(serie_b.std(ddof=1) * np.sqrt(12.0))
+    rho = float(np.corrcoef(serie_e, serie_b)[0, 1])
+
+    return {
+        "serie_e": serie_e, "serie_b": serie_b, "n_mesi": m,
+        "mu_e": mu_e, "sig_e": sig_e, "mu_b": mu_b, "sig_b": sig_b, "rho": rho,
+        "tickers_azionari": [tickers[i] for i in eq_idx],
+        "tickers_obblig": [tickers[i] for i in bond_idx],
+    }
