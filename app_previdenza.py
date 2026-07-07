@@ -1496,7 +1496,7 @@ for ki, key in enumerate(comparto_keys):
             avvisi_corti.append(f"{fondo_k} · {comp_k} ({len(serie)} mesi)")
         try:
             mat_per_comparto[key] = genera_rendimenti_block_bootstrap(
-                serie, durata, block=int(block_mesi), n=N_BAND, seed=33 + ki)
+                serie, durata, block=int(block_mesi), n=N_BAND, seed=st.session_state.master_seed + ki)
         except ValueError as e:
             mancanti.append(f"{fondo_k} · {comp_k} (serie mensile troppo corta dopo il "
                             f"taglio all'anno {anno_inizio_storico}: {e})")
