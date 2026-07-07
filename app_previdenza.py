@@ -12,6 +12,10 @@ import json
 st.set_page_config(page_title="Simulatore Previdenziale Pro", layout="wide")
 st.title("🚀 Confronto Previdenziale: Fondo vs PAC + TFR")
 
+# --- Gestione del Seed per ricalcolo casuale ---
+if "master_seed" not in st.session_state:
+    st.session_state.master_seed = 33
+
 # ---------------------------------------------------------------------------
 # DATI CCNL / FONDI NEGOZIALI — un file JSON per CCNL (data/ccnl/)
 # ---------------------------------------------------------------------------
@@ -413,7 +417,10 @@ st.sidebar.caption(
     f"Minimo tabellare **{livello}**: {minimo_mensile:,.0f} €/mese × {mensilita} "
     f"mensilità = **{minimo_annuo:,.0f} €/anno**"
 )
-
+# --- Pulsante Ricalcolo ---
+if st.sidebar.button("🎲 Ricalcola Scenari Casuali"):
+    st.session_state.master_seed = int(np.random.randint(0, 100000))
+    
 st.sidebar.markdown("**Composizione della RAL**")
 anni_anzianita_pregressi = st.sidebar.number_input(
     "Scatti di anzianità già maturati", min_value=0, max_value=preset["scatti_max"],
