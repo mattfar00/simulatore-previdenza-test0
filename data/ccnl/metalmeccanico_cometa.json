@@ -1,5 +1,5 @@
 {
-  "nome": "Metalmeccanico (Cometa)",
+  "nome": "Metalmeccanico",
   "fondo": "Cometa",
   "contrib_lav_pct": 0.012,
   "contrib_azienda_pct": 0.02,
@@ -30,33 +30,12 @@
     "B3": 40.96,
     "A1": 40.96
   },
-  "scatto_valore": 30.0,
   "scatto_ogni_anni": 2,
   "scatti_max": 5,
-  "comparti": {
-    "Garantito": {
-      "ter": 0.004,
-      "rendimento_atteso": 0.01,
-      "volatilita": 0.03,
-      "quota_titoli_stato": 0.7
-    },
-    "Bilanciato": {
-      "ter": 0.002,
-      "rendimento_atteso": 0.027,
-      "volatilita": 0.07,
-      "quota_titoli_stato": 0.45
-    },
-    "Azionario": {
-      "ter": 0.0025,
-      "rendimento_atteso": 0.045,
-      "volatilita": 0.135,
-      "quota_titoli_stato": 0.2
-    },
-    "Monetario": {
-      "ter": 0.0025,
-      "rendimento_atteso": 0.012,
-      "volatilita": 0.015,
-      "quota_titoli_stato": 0.8
-    }
-  }
+  "comparti": [
+    "Garantito",
+    "Bilanciato",
+    "Azionario",
+    "Monetario"
+  ]
 }
