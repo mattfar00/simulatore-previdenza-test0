@@ -1591,6 +1591,7 @@ _ctx_backtest = {
     "comparto": comparto,
     "usa_portafoglio": usa_portafoglio,
     "portafoglio_info": portafoglio_info,
+    "portafoglio_errore": errore_portafoglio,
     "ticker_to_nome": TICKER_TO_NOME,
     "simula_capitale": simula_capitale,
     "fattori_mediani": fattori_mediani,
