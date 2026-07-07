@@ -22,17 +22,18 @@ st.title("🚀 Confronto Previdenziale: Fondo vs PAC + TFR")
 #
 # Schema di ciascun file (vedi _template.json per la versione commentata):
 #   nome, fondo, contrib_lav_pct, contrib_azienda_pct, contrib_azienda_u35_pct,
-#   tfr_pct, costo_iniziale, costo_fisso, mensilita, livelli {}, 
+#   tfr_pct, costo_iniziale, costo_fisso, mensilita, livelli {},
 #   scatti_valore_livello {} (opzionale), scatto_valore, scatto_ogni_anni,
-#   scatti_max, comparti { nome: {ter, rendimento_atteso, volatilita,
-#   quota_titoli_stato} }
+#   scatti_max, comparti [lista di nomi]
 #
 # IMPORTANTE:
 # - "fondo" deve combaciare col nome del CSV storico in data/<fondo>.csv
 #   (es. fondo="Cometa" -> data/cometa.csv), altrimenti il resampling
 #   storico non trova le serie.
-# - Le chiavi di "comparti" devono combaciare ESATTAMENTE con le colonne del
-#   CSV storico di quel fondo.
+# - I nomi in "comparti" devono combaciare ESATTAMENTE con le colonne del
+#   CSV storico di quel fondo. Il rendimento non è un parametro qui: il
+#   motore usa SEMPRE lo storico reale della quota (ricampionato dal CSV),
+#   mai un'assunzione parametrica.
 CARTELLA_CCNL_CANDIDATE = [
     "data/ccnl",
     "ccnl",
@@ -50,10 +51,13 @@ def _trova_cartella_ccnl():
 def carica_ccnl_preset():
     """
     Legge tutti i *.json in data/ccnl/ (esclusi quelli che iniziano con "_",
-    come _template.json) e costruisce il dizionario CCNL_PRESET, con la
-    stessa forma usata dal resto dello script: preset["comparti"][nome] è una
-    tupla (ter, rendimento_atteso, volatilita, quota_titoli_stato), come nel
-    vecchio dizionario hard-coded.
+    come _template.json) e costruisce il dizionario CCNL_PRESET.
+
+    preset["comparti"] è una semplice LISTA di nomi comparto (es. ["Garantito",
+    "Bilanciato", "Azionario"]). Il rendimento non è più un parametro del
+    CCNL: il motore usa sempre il rendimento storico reale della quota
+    (ricampionato da data/<fondo>.csv), quindi qui basta sapere quali nomi di
+    comparto esistono e devono combaciare con le colonne di quel CSV.
 
     Ritorna (preset_dict, cartella_usata, errori). errori è una lista di
     messaggi per file malformati o campi mancanti (il file viene saltato,
@@ -87,13 +91,18 @@ def carica_ccnl_preset():
             errori.append(f"{fname}: campi mancanti {mancanti}")
             continue
 
-        try:
-            comparti_tuple = {
-                comp: (v["ter"], v["rendimento_atteso"], v["volatilita"], v["quota_titoli_stato"])
-                for comp, v in cfg["comparti"].items()
-            }
-        except (KeyError, TypeError) as e:
-            errori.append(f"{fname}: comparto malformato ({e})")
+        comparti_raw = cfg["comparti"]
+        if isinstance(comparti_raw, dict):
+            # Compatibilità con il vecchio schema (dict di parametri per
+            # comparto): basta il nome, i parametri numerici sono ignorati.
+            lista_comparti = list(comparti_raw.keys())
+        elif isinstance(comparti_raw, list):
+            lista_comparti = list(comparti_raw)
+        else:
+            errori.append(f"{fname}: 'comparti' deve essere una lista di nomi")
+            continue
+        if not lista_comparti:
+            errori.append(f"{fname}: 'comparti' è vuoto")
             continue
 
         nome = cfg["nome"]
@@ -111,7 +120,7 @@ def carica_ccnl_preset():
             "scatto_valore": cfg["scatto_valore"],
             "scatto_ogni_anni": cfg["scatto_ogni_anni"],
             "scatti_max": cfg["scatti_max"],
-            "comparti": comparti_tuple,
+            "comparti": lista_comparti,
         }
 
     return preset, cartella, errori
@@ -170,13 +179,20 @@ def _trova_file_fondo(nome_file: str):
 def carica_quote_storiche():
     """
     Legge un CSV largo per fondo (anno, mese, <comparto1>, <comparto2>, ...) e
-    lo trasforma in due strutture calcolate a runtime (nessun dato hard-coded):
+    lo trasforma in strutture calcolate a runtime (nessun dato hard-coded):
     - STORICO_MENSILE[fondo][comparto] -> rendimenti mensili (ordine cronologico)
     - STORICO_ANNUALE[fondo][comparto] -> rendimenti annui Dic->Dic
+    - STORICO_MENSILE_ANNI / STORICO_ANNUALE_ANNI: stesse chiavi, con l'ANNO
+      corrispondente a ciascuna osservazione (stessa lunghezza, stesso ordine).
+      Servono per poter tagliare lo storico da un anno di inizio scelto
+      dall'utente (es. per escludere il rimbalzo post-2008), mantenendo
+      l'allineamento tra rendimento e anno.
 
-    Ritorna (mensile, annuale, percorsi_trovati, fondi_mancanti).
+    Ritorna (mensile, annuale, mensile_anni, annuale_anni, percorsi_trovati, fondi_mancanti).
     """
-    mensile, annuale, percorsi_trovati, fondi_mancanti = {}, {}, {}, []
+    mensile, annuale = {}, {}
+    mensile_anni, annuale_anni = {}, {}
+    percorsi_trovati, fondi_mancanti = {}, []
 
     for fondo, nome_file in FILE_STORICO_PER_FONDO.items():
         percorso = _trova_file_fondo(nome_file)
@@ -203,17 +219,22 @@ def carica_quote_storiche():
             rend_m = [round(serie[chiavi[i]] / serie[chiavi[i-1]] - 1, 6)
                       for i in range(1, len(chiavi))]
             mensile.setdefault(fondo, {})[comp] = rend_m
+            # anno del mese di ARRIVO di ciascun rendimento mensile
+            mensile_anni.setdefault(fondo, {})[comp] = [chiavi[i][0] for i in range(1, len(chiavi))]
 
             anni_dic = sorted({y for (y, m) in serie if m == 12})
-            rend_a = []
+            rend_a, anni_lista = [], []
             for y in anni_dic:
                 if (y, 12) in serie and (y - 1, 12) in serie:
                     rend_a.append(round(serie[(y, 12)] / serie[(y - 1, 12)] - 1, 5))
+                    anni_lista.append(y)
             annuale.setdefault(fondo, {})[comp] = rend_a
+            annuale_anni.setdefault(fondo, {})[comp] = anni_lista
 
-    return mensile, annuale, percorsi_trovati, fondi_mancanti
+    return mensile, annuale, mensile_anni, annuale_anni, percorsi_trovati, fondi_mancanti
 
-STORICO_MENSILE, STORICO_ANNUALE, _PERCORSI_TROVATI, _FONDI_MANCANTI = carica_quote_storiche()
+(STORICO_MENSILE, STORICO_ANNUALE, STORICO_MENSILE_ANNI, STORICO_ANNUALE_ANNI,
+ _PERCORSI_TROVATI, _FONDI_MANCANTI) = carica_quote_storiche()
 
 if _FONDI_MANCANTI:
     dettagli = "\n".join(
@@ -227,13 +248,33 @@ if _FONDI_MANCANTI:
     )
     st.stop()
 
-def annuale_disponibile(fondo: str, comparto: str, min_anni: int = 5) -> bool:
-    serie = STORICO_ANNUALE.get(fondo, {}).get(comparto, [])
-    return len(serie) >= min_anni
-
 def mensile_disponibile(fondo: str, comparto: str, min_mesi: int = 24) -> bool:
     serie = STORICO_MENSILE.get(fondo, {}).get(comparto, [])
     return len(serie) >= min_mesi
+
+
+def filtra_storico_da_anno(serie: list, anni: list, anno_inizio: int) -> list:
+    """
+    Mantiene solo le osservazioni di `serie` con anno >= anno_inizio, usando
+    `anni` (stessa lunghezza) come etichetta di riferimento. Usata per
+    mitigare il bias da "punto di partenza" nelle serie storiche brevi (es.
+    un fondo nato subito prima di una crisi mostra un primo rimbalzo enorme
+    che gonfia il CAGR se lo storico usato parte da lì). Se anno_inizio è
+    <= al primo anno disponibile, la serie non viene toccata.
+    """
+    if not serie:
+        return serie
+    return [r for r, y in zip(serie, anni) if y >= anno_inizio]
+
+
+# Limiti globali per lo slider "anno di inizio storico": min = l'anno più
+# vecchio disponibile in assoluto tra tutti i fondi/comparti caricati; max =
+# lasciamo margine di almeno 5 anni all'ultima serie più corta, per evitare
+# di azzerare per errore lo storico di un comparto.
+_anni_min_per_serie = [min(anni) for fo in STORICO_ANNUALE_ANNI.values() for anni in fo.values() if anni]
+_anni_max_per_serie = [max(anni) for fo in STORICO_ANNUALE_ANNI.values() for anni in fo.values() if anni]
+ANNO_STORICO_MIN_GLOBALE = min(_anni_min_per_serie) if _anni_min_per_serie else 2000
+ANNO_STORICO_MAX_GLOBALE = (max(_anni_max_per_serie) - 5) if _anni_max_per_serie else 2020
 
 # ---------------------------------------------------------------------------
 # COEFFICIENTI DI CRESCITA per tipo lavoratore (solo Operaio / Impiegato)
@@ -360,7 +401,7 @@ minimo_annuo = minimo_mensile * mensilita
 scatto_valore_livello = preset.get("scatti_valore_livello", {}).get(
     livello, preset["scatto_valore"]
 )
-comparti_base = list(preset["comparti"].keys())
+comparti_base = list(preset["comparti"])
 
 st.sidebar.caption(
     f"Minimo tabellare **{livello}**: {minimo_mensile:,.0f} €/mese × {mensilita} "
@@ -472,7 +513,7 @@ if usa_cambio_ccnl:
             f"Cambio #{i+1} — livello", list(preset_new["livelli"].keys()),
             key=f"liv_ccnl_{i}",
         )
-        _cn = list(preset_new["comparti"].keys())
+        _cn = list(preset_new["comparti"])
         comp_new = st.sidebar.selectbox(
             f"Cambio #{i+1} — comparto", _cn,
             index=_cn.index("Azionario") if "Azionario" in _cn else len(_cn) - 1,
@@ -480,6 +521,27 @@ if usa_cambio_ccnl:
         )
         cambi_ccnl.append((int(anno_c), ccnl_new, liv_new, comp_new))
     cambi_ccnl.sort(key=lambda x: x[0])
+
+    st.sidebar.markdown("**Contributi del datore al cambio fondo**")
+    mantieni_contributi_azienda = st.sidebar.checkbox(
+        "Mantieni nel nuovo fondo i contributi già versati dal VECCHIO datore",
+        value=True,
+        help="⚠️ Punto normativo NON del tutto pacifico. La posizione "
+             "individuale nei fondi pensione negoziali è in linea generale "
+             "portabile (TFR + contributi lavoratore + contributi azienda "
+             "seguono il lavoratore), ma la legge lascia margini di "
+             "interpretazione su casi specifici legati al cambio di fondo di "
+             "categoria. Attiva questa casella per simulare lo scenario in "
+             "cui l'intero montante (compresa la quota versata dal datore) "
+             "si trasferisce col cambio di lavoro/CCNL; disattivala per "
+             "simulare lo scenario prudenziale in cui SOLO la quota versata "
+             "dal datore resta 'congelata' nel vecchio fondo/non si trasferisce "
+             "(TFR e contributi tuoi restano comunque tuoi in entrambi i casi). "
+             "Non sono un consulente legale: verifica sempre lo statuto del "
+             "fondo specifico.",
+    )
+else:
+    mantieni_contributi_azienda = True  # nessun cambio CCNL pianificato: irrilevante
 
 # --- NUOVO: Periodi di disoccupazione ----------------------------------------
 st.sidebar.markdown("**Periodi di disoccupazione**")
@@ -498,7 +560,6 @@ if usa_disoccupazione:
 st.sidebar.header("3. Fondo")
 _idx_comp = comparti_base.index("Azionario") if "Azionario" in comparti_base else len(comparti_base) - 1
 comparto = st.sidebar.selectbox("Comparto d'investimento", comparti_base, index=_idx_comp)
-ter_fondo, rend_medio_fondo, vol_fondo, quota_ts = preset["comparti"][comparto]
 
 under35 = eta < 35
 contrib_az_pct = preset["contrib_azienda_u35_pct"] if under35 else preset["contrib_azienda_pct"]
@@ -506,8 +567,9 @@ contrib_az_pct = preset["contrib_azienda_u35_pct"] if under35 else preset["contr
 st.sidebar.caption(
     f"**{preset['fondo']} · {comparto}** — datore {contrib_az_pct*100:.2f}% "
     f"(sui minimi+scatti) · tu min {preset['contrib_lav_pct']*100:.2f}% · "
-    f"TFR {preset['tfr_pct']*100:.2f}% · TER {ter_fondo*100:.2f}%/anno · "
-    f"rend. atteso {rend_medio_fondo*100:.1f}% (vol. {vol_fondo*100:.0f}%)"
+    f"TFR {preset['tfr_pct']*100:.2f}%. Il rendimento del comparto viene dallo "
+    f"storico reale della quota (già netto di tasse e costi di gestione), non "
+    f"da un'assunzione parametrica."
 )
 
 vers_vol_extra = st.sidebar.number_input(
@@ -540,21 +602,39 @@ if usa_variazioni_vol_extra:
         variazioni_vol_extra.append((int(anno_v), float(importo_v)))
 
 st.sidebar.header("4. Performance simulata (Fondo)")
-metodo_resampling = st.sidebar.radio(
-    "Metodo di resampling del fondo",
-    ["Block-bootstrap mensile", "Bootstrap annuale"],
-    index=0,
-    help="I rendimenti del fondo vengono SEMPRE dal ricampionamento dello storico "
-         "reale del comparto (nessun GBM). Il block-bootstrap mensile ricampiona "
-         "blocchi di 12 mesi consecutivi (più dati, preserva la sequenza); il "
-         "bootstrap annuale ricampiona direttamente i rendimenti di ogni anno.",
+st.sidebar.caption(
+    "I rendimenti del fondo vengono SEMPRE dal ricampionamento (block-"
+    "bootstrap) dello storico mensile reale della quota del comparto — mai "
+    "da un'assunzione parametrica. Usa tutti i mesi disponibili (non solo i "
+    "rendimenti di fine anno), il che dà stime più solide anche per i "
+    "comparti con storico breve."
 )
-usa_mensile = metodo_resampling.startswith("Block")
-block_mesi = 12
-if usa_mensile:
-    block_mesi = st.sidebar.number_input(
-        "Lunghezza blocco (mesi)", min_value=3, max_value=24, value=12, step=1,
-        help="Dimensione del blocco contiguo ricampionato. 12 = un anno intero.",
+usa_mensile = True  # unico metodo disponibile: block-bootstrap mensile
+block_mesi = st.sidebar.number_input(
+    "Lunghezza blocco (mesi)", min_value=3, max_value=24, value=12, step=1,
+    help="Dimensione del blocco contiguo ricampionato dallo storico mensile "
+         "reale. 12 = un anno intero (preserva stagionalità e sequenze "
+         "annuali); valori più piccoli mescolano più liberamente i mesi.",
+)
+
+st.sidebar.markdown("**Orizzonte storico usato per il resampling**")
+anno_inizio_storico = st.sidebar.slider(
+    "Escludi gli anni precedenti a...", ANNO_STORICO_MIN_GLOBALE, ANNO_STORICO_MAX_GLOBALE,
+    ANNO_STORICO_MIN_GLOBALE, 1,
+    help="Taglia via dallo storico usato per il resampling tutti gli anni "
+         "precedenti a quello scelto. Utile per mitigare il bias da 'punto di "
+         "partenza': un comparto nato subito prima di una crisi (es. 2008) "
+         "mostra spesso un primo rimbalzo enorme che gonfia il rendimento "
+         "medio storico se lo si include. Il valore di default (il più "
+         "vecchio disponibile) NON esclude nulla, cioè usa tutta la storia "
+         "disponibile per ciascun comparto, come comportamento originale. "
+         "Se un comparto parte già dopo l'anno scelto, resta invariato.",
+)
+if anno_inizio_storico > ANNO_STORICO_MIN_GLOBALE:
+    st.sidebar.caption(
+        f"ℹ️ Storico troncato: verranno usate solo le osservazioni dal "
+        f"{anno_inizio_storico} in poi, per ogni comparto che ha dati "
+        f"precedenti a quell'anno."
     )
 
 st.sidebar.caption("Banda P10–P90 mostrata su tutte le curve (200 scenari).")
@@ -868,27 +948,6 @@ def genera_rendimenti_gbm(rend_medio: float, vol: float, durata: int,
     return np.exp(shocks) - 1.0
 
 
-# ---------------------------------------------------------------------------
-# BRANCH: BOOTSTRAP STORICO DEI RENDIMENTI DI COMPARTO
-# ---------------------------------------------------------------------------
-@st.cache_data
-def genera_rendimenti_bootstrap(serie_storica: tuple, durata: int,
-                                n: int = 200, seed: int = 21):
-    """
-    Bootstrap iid sui rendimenti ANNUI storici reali del comparto. Ogni anno
-    ricampionato viene poi spalmato in 12 rendimenti mensili equivalenti
-    ((1+r)^(1/12)-1), così il motore mensile può usarlo direttamente.
-    Ritorna (n x durata*12).
-    """
-    serie = np.array(serie_storica, dtype=float)
-    if serie.size == 0:
-        raise ValueError("Serie storica del comparto vuota.")
-    rng = np.random.default_rng(seed)
-    idx = rng.integers(0, serie.size, size=(n, durata))
-    annui = serie[idx]                              # (n, durata)
-    mensili = (1 + annui) ** (1 / 12) - 1           # (n, durata)
-    return np.repeat(mensili, 12, axis=1)           # (n, durata*12)
-
 
 @st.cache_data
 def genera_rendimenti_block_bootstrap(serie_mensile: tuple, durata: int,
@@ -922,17 +981,6 @@ def mensili_ad_annui(mat_mensile: np.ndarray) -> np.ndarray:
     n, mesi = mat_mensile.shape
     anni = mesi // 12
     return np.prod(1 + mat_mensile[:, :anni * 12].reshape(n, anni, 12), axis=2) - 1
-
-
-def rendimento_netto_comparto(r, ter, quota_ts):
-    """
-    Rende netto annuo a livello di comparto, coerente col motore del montante:
-    tassa 20%/12,5% (media pesata sulla quota in titoli di Stato) applicata al
-    rendimento, poi TER. Vale anche per r<0 (credito d'imposta implicito).
-    """
-    aliq = 0.20 * (1 - quota_ts) + 0.125 * quota_ts
-    r = np.asarray(r, dtype=float)
-    return (1 + r * (1 - aliq)) * (1 - ter) - 1
 
 
 def rendimento_netto_pac(r, ter_p):
@@ -1132,7 +1180,7 @@ def costruisci_schedule(durata, ccnl_start, livello_start, comparto_start,
         preset_a = CCNL_PRESET[ccnl_att]
         # comparto di ripiego se il nome non esiste nel nuovo fondo
         if comp_att not in preset_a["comparti"]:
-            comp_att = list(preset_a["comparti"].keys())[-1]
+            comp_att = preset_a["comparti"][-1]
 
         mens_a = preset_a["mensilita"]
         minimo_mensile_a = preset_a["livelli"][liv_att]
@@ -1148,8 +1196,6 @@ def costruisci_schedule(durata, ccnl_start, livello_start, comparto_start,
         ca_pct_a = preset_a["contrib_azienda_u35_pct"] if u35 else preset_a["contrib_azienda_pct"]
         lav_pct_a = preset_a["contrib_lav_pct"]
         tfr_pct_a = preset_a["tfr_pct"]
-
-        ter_f_a, rend_a, vol_a, quota_ts_a = preset_a["comparti"][comp_att]
         costo_fisso_a = preset_a["costo_fisso"]
 
         # --- SCATTI DI ANZIANITÀ ---
@@ -1184,12 +1230,12 @@ def costruisci_schedule(durata, ccnl_start, livello_start, comparto_start,
             "fondo": preset_a["fondo"], "comparto_key": (preset_a["fondo"], comp_att),
             "mensilita": mens_a,
             "ca_pct": ca_pct_a, "lav_pct": lav_pct_a, "tfr_pct": tfr_pct_a,
-            "ter_f": ter_f_a, "costo_fisso_f": costo_fisso_a, "quota_ts": quota_ts_a,
-            "rend_medio": rend_a, "vol": vol_a,
+            "costo_fisso_f": costo_fisso_a,
             "base_contrib": base_contrib_a if occupato else 0.0,
             "ral_base_eff": ral_base_eff_a,
             "scatti": scatti_maturati,
             "occupato": occupato,
+            "cambio_ccnl_qui": (anno_ultimo_cambio_ccnl == anno),
         })
     return sched
 
@@ -1230,12 +1276,28 @@ def simula_capitale(fattori, rend_fondo_mensili, rend_pac_mensili, sched, scal,
     cap_pac = float(scal.get("cap_iniziale_pac", 0.0))
     versato_pac_cum = float(scal.get("cap_iniziale_pac", 0.0))
     cap_tfr = 0.0
+    mantieni_contributi_azienda = scal.get("mantieni_contributi_azienda", True)
+    # Ledger "ombra": segue SOLO la quota del fondo derivata dai contributi
+    # del datore (capitale + rendimento/TER maturati su quella quota), senza
+    # intaccare cap_fondo. Serve unicamente per poter sottrarre esattamente
+    # quella quota da cap_fondo se, a un cambio di CCNL, l'utente ha scelto
+    # di NON trattenerla (vedi opzione in sidebar).
+    cap_fondo_azienda_ombra = 0.0
     rows = []
 
     for a, f in enumerate(fattori):
         s = sched[a]
         anno = a + 1
         occupato = s["occupato"]
+
+        # Cambio CCNL in questo anno: se l'utente ha scelto di NON trattenere
+        # i contributi già versati dal VECCHIO datore, li sottraiamo dal
+        # montante del fondo (con il loro rendimento/TER maturato) prima di
+        # applicare i contributi di quest'anno. TFR e contributi del
+        # lavoratore restano sempre intatti in entrambi gli scenari.
+        if s["cambio_ccnl_qui"] and not mantieni_contributi_azienda:
+            cap_fondo = max(0.0, cap_fondo - cap_fondo_azienda_ombra)
+            cap_fondo_azienda_ombra = 0.0
 
         # RAL: override manuale (se attivo) solo mentre si è occupati
         if occupato:
@@ -1244,7 +1306,6 @@ def simula_capitale(fattori, rend_fondo_mensili, rend_pac_mensili, sched, scal,
             ral_curr = 0.0
 
         base_contrib = s["base_contrib"]  # già 0 se disoccupato
-        aliq_rend_fondo = 0.20 * (1 - s["quota_ts"]) + 0.125 * s["quota_ts"]
 
         # Importi ANNUI (per la tabella e l'IRPEF)
         tfr_curr = ral_curr * s["tfr_pct"] if occupato else 0.0
@@ -1265,11 +1326,23 @@ def simula_capitale(fattori, rend_fondo_mensili, rend_pac_mensili, sched, scal,
         # --- CICLO MENSILE: versamenti in 12 rate, rendimento mese per mese ---
         # Ogni rata prende solo il rendimento dei mesi RESIDUI dell'anno (fix
         # della vecchia versione che dava un anno intero di rendimento a tutto
-        # il versamento annuo). TER e rivalutazione TFR convertiti in mensili.
+        # il versamento annuo). Rivalutazione TFR convertita in mensile.
+        #
+        # NB: il rendimento del fondo (rend_fondo_mensili) viene dal
+        # RICAMPIONAMENTO della quota storica reale del comparto. La quota
+        # pubblicata da un fondo pensione negoziale è GIÀ AL NETTO sia
+        # dell'imposta sostitutiva annua 20%/12,5% (che il fondo versa
+        # direttamente, non l'iscritto) sia dei costi di gestione finanziaria
+        # (il fondo li scarica sulla quota, come il NAV di un fondo comune è
+        # già al netto del proprio TER). Applicare QUI un'altra tassa/TER sul
+        # rendimento ricampionato sarebbe un doppio conteggio: il rendimento
+        # storico va quindi usato COSÌ COM'È. L'unico costo aggiuntivo reale,
+        # non incluso nella quota, è il costo fisso amministrativo annuo in
+        # euro (costo_fisso_f), applicato una volta l'anno più sotto.
         rata_fondo = (vf_curr + tfr_curr + ca_curr) / 12.0
+        rata_azienda = ca_curr / 12.0
         rata_pac = vp_curr / 12.0
         rata_tfr = tfr_curr / 12.0
-        ter_f_m = 1 - (1 - s["ter_f"]) ** (1 / 12)
         ter_p_m = 1 - (1 - ter_p) ** (1 / 12)
         rt_m = (1 + rt) ** (1 / 12) - 1
 
@@ -1277,12 +1350,18 @@ def simula_capitale(fattori, rend_fondo_mensili, rend_pac_mensili, sched, scal,
             r_f = rend_fondo_mensili[a * 12 + mese]
             r_p = rend_pac_mensili[a * 12 + mese]
 
-            # FONDO: versamento a inizio mese, rendimento tassato, poi TER
+            # FONDO: versamento a inizio mese, rendimento della quota GIÀ NETTO
             cap_fondo += rata_fondo
-            cap_fondo += cap_fondo * r_f * (1 - aliq_rend_fondo)
-            cap_fondo *= (1 - ter_f_m)
+            cap_fondo += cap_fondo * r_f
 
-            # PAC: versamento a inizio mese, rendimento, TER
+            # Ledger ombra quota-datore: stessa dinamica (stesso comparto),
+            # non tocca cap_fondo — serve solo a sapere quanto vale la quota
+            # datore nel momento di un eventuale cambio CCNL.
+            cap_fondo_azienda_ombra += rata_azienda
+            cap_fondo_azienda_ombra += cap_fondo_azienda_ombra * r_f
+
+            # PAC: versamento a inizio mese, rendimento, TER (qui sì dovuto:
+            # un ETF non è pre-tassato come i fondi pensione negoziali)
             versato_pac_cum += rata_pac
             cap_pac += rata_pac
             cap_pac *= (1 + r_p) * (1 - ter_p_m)
@@ -1380,36 +1459,36 @@ N_BAND = 200
 # del comparto attivo in quell'anno. Così un cambio CCNL/comparto a metà
 # carriera cambia davvero il motore di rendimento del fondo.
 comparto_keys = sorted({s["comparto_key"] for s in sched})
-avvisi_corti = []       # comparti con storico annuale troppo corto
-mancanti = []           # comparti senza dati per il metodo scelto (GBM rimosso)
+avvisi_corti = []       # comparti con storico mensile relativamente breve
+mancanti = []           # comparti senza dati sufficienti per il resampling
 mat_per_comparto = {}
+SOGLIA_MESI_CORTI = 60  # meno di 5 anni di mesi: banda P10-P90 poco robusta
 for ki, key in enumerate(comparto_keys):
     fondo_k, comp_k = key
     # seed decorrelato per comparto (evita traiettorie identiche tra comparti
     # in caso di cambio CCNL/comparto a metà carriera)
-    if usa_mensile:
-        if mensile_disponibile(fondo_k, comp_k):
-            serie = tuple(STORICO_MENSILE[fondo_k][comp_k])
+    if mensile_disponibile(fondo_k, comp_k):
+        serie_full = STORICO_MENSILE[fondo_k][comp_k]
+        anni_full = STORICO_MENSILE_ANNI[fondo_k][comp_k]
+        serie = tuple(filtra_storico_da_anno(serie_full, anni_full, anno_inizio_storico))
+        if len(serie) < SOGLIA_MESI_CORTI:
+            avvisi_corti.append(f"{fondo_k} · {comp_k} ({len(serie)} mesi)")
+        try:
             mat_per_comparto[key] = genera_rendimenti_block_bootstrap(
                 serie, durata, block=int(block_mesi), n=N_BAND, seed=33 + ki)
-        else:
-            mancanti.append(f"{fondo_k} · {comp_k} (serie mensile)")
+        except ValueError as e:
+            mancanti.append(f"{fondo_k} · {comp_k} (serie mensile troppo corta dopo il "
+                            f"taglio all'anno {anno_inizio_storico}: {e})")
     else:
-        if annuale_disponibile(fondo_k, comp_k):
-            serie = tuple(STORICO_ANNUALE[fondo_k][comp_k])
-            if len(serie) < 8:
-                avvisi_corti.append(f"{fondo_k} · {comp_k} ({len(serie)} anni)")
-            mat_per_comparto[key] = genera_rendimenti_bootstrap(serie, durata, n=N_BAND, seed=21 + ki)
-        else:
-            mancanti.append(f"{fondo_k} · {comp_k} (serie annuale)")
+        mancanti.append(f"{fondo_k} · {comp_k} (serie mensile)")
 
 if mancanti:
     st.error(
-        "**Dati storici mancanti** per: " + ", ".join(mancanti) + ".\n\n"
-        "Il GBM è stato rimosso dal fondo: i rendimenti provengono solo dal "
-        "resampling dello storico reale. Popola `STORICO_MENSILE` / "
-        "`STORICO_ANNUALE` per questi comparti (o scegli un CCNL/comparto già "
-        "coperto, es. Cometa) per continuare."
+        "**Dati storici mancanti o insufficienti** per: " + "; ".join(mancanti) + ".\n\n"
+        "I rendimenti provengono solo dal resampling dello storico reale. Se "
+        "hai tagliato l'orizzonte storico (sezione '4. Performance simulata'), "
+        "prova ad abbassare l'anno di inizio, oppure abbassa la lunghezza del "
+        "blocco, oppure scegli un CCNL/comparto già coperto (es. Cometa)."
     )
     st.stop()
 
@@ -1457,6 +1536,7 @@ scal = dict(
     anni_pregressi=anni_gia_iscritto, uscita_ordinaria=uscita_ordinaria,
     cap_iniziale_fondo=capitale_iniziale_fondo,
     cap_iniziale_pac=capitale_iniziale_pac,
+    mantieni_contributi_azienda=mantieni_contributi_azienda,
 )
 
 fattori_mediani = [float(np.percentile([s[a] for s in scenari], 50)) for a in range(durata)]
@@ -1472,8 +1552,7 @@ anni = list(range(1, durata + 1))
 # ---------------------------------------------------------------------------
 # INTESTAZIONE
 # ---------------------------------------------------------------------------
-motore_txt = (f"Block-bootstrap mensile (blocco {int(block_mesi)} mesi)"
-              if usa_mensile else "Bootstrap annuale")
+motore_txt = f"Block-bootstrap mensile (blocco {int(block_mesi)} mesi)"
 st.info(
     f"**Profilo:** {tipo_lavoratore} · {ccnl_scelto} · livello {livello} · comparto {comparto}  \n"
     f"Coefficiente crescita ×{coeff_totale:.2f} · crescita di base "
@@ -1483,12 +1562,12 @@ st.info(
     f"*Valori nominali (includono l'inflazione, coerentemente con contributi e montante).*"
 )
 
-if (not usa_mensile) and avvisi_corti:
+if avvisi_corti:
     st.caption(
-        "ℹ️ Storico REALE ma corto (bootstrap fragile, poche osservazioni): "
+        "ℹ️ Storico REALE ma relativamente breve (meno di 5 anni di mesi): "
         + ", ".join(avvisi_corti)
-        + ". Con serie brevi la banda P10–P90 dipende da pochi anni; il block-"
-          "bootstrap mensile (opzionale) sfrutterebbe più dati."
+        + ". La banda P10–P90 per questi comparti dipende da un numero limitato "
+          "di osservazioni sottostanti: trattala con più cautela."
     )
 
 if usa_cambio_ccnl and cambi_ccnl:
@@ -1530,90 +1609,94 @@ st.divider()
 # SEZIONE COSTI DEL FONDO
 # ---------------------------------------------------------------------------
 st.subheader(f"💰 Struttura dei Costi — {preset['fondo']} ({comparto})")
-cc1, cc2, cc3, cc4 = st.columns(4)
+cc1, cc2 = st.columns(2)
 cc1.metric("Costo iniziale (una tantum)", f"€ {preset['costo_iniziale']:,.2f}")
 cc2.metric("Costo fisso annuo", f"€ {preset['costo_fisso']:,.0f}")
-cc3.metric("TER (gestione annua)", f"{ter_fondo*100:.2f}%")
-aliq_rend = 0.20 * (1 - quota_ts) + 0.125 * quota_ts
-cc4.metric("Tassa sui rendimenti/anno", f"{aliq_rend*100:.1f}%")
 
-cap_medio = df_main["Fondo Netto (€)"].mean()
-ter_totale_stimato = ter_fondo * cap_medio * durata
 costo_fisso_totale = preset["costo_fisso"] * durata + preset["costo_iniziale"]
 
 with st.expander("📖 Come leggere i costi del fondo"):
     st.markdown(f"""
-Il fondo pensione ha **quattro tipi di costo**, tutti inclusi nella simulazione:
+Il fondo pensione ha **due costi separati**, entrambi inclusi nella simulazione:
 
 1. **Costo iniziale** — €{preset['costo_iniziale']:.2f} una tantum all'iscrizione.
-2. **Costo fisso annuo** — €{preset['costo_fisso']:.0f}/anno. Su {durata} anni: ~€{costo_fisso_totale:,.0f}.
-3. **TER** — {ter_fondo*100:.2f}%/anno del comparto *{comparto}*; è il costo che pesa
-   di più nel lungo periodo (stima ~€{ter_totale_stimato:,.0f} sull'orizzonte).
-4. **Tassa sui rendimenti** — 20% ordinario, 12,5% sulla quota in titoli di Stato;
-   aliquota effettiva **{aliq_rend*100:.1f}%** per *{comparto}*.
+2. **Costo fisso annuo** — €{preset['costo_fisso']:.0f}/anno di spese amministrative
+   sulla posizione individuale. Su {durata} anni: ~€{costo_fisso_totale:,.0f}.
+
+**Costi di gestione finanziaria e tassazione annua NON compaiono qui separatamente:**
+il rendimento storico usato per la simulazione è quello della **quota reale**
+pubblicata dal fondo per il comparto *{comparto}*, che è **già al netto**
+dell'imposta sostitutiva annua (20% ordinario, 12,5% sulla quota in titoli di
+Stato — pagata dal fondo stesso, non dall'iscritto) e dei costi di gestione
+finanziaria (il TER è già scaricato sulla quota, come il NAV di un fondo
+comune è già al netto delle proprie commissioni). Applicare un'ulteriore
+deduzione qui sarebbe un doppio conteggio: la simulazione usa quindi il
+rendimento storico così com'è, più i due costi sopra che restano a carico
+della posizione individuale.
 """)
 st.divider()
 
 
 # ---------------------------------------------------------------------------
-# RENDIMENTO NETTO PER ANNO DEL COMPARTO SCELTO
+# RENDIMENTO PER ANNO DEL COMPARTO SCELTO
 # ---------------------------------------------------------------------------
-st.subheader(f"📗 Rendimento netto per anno — {comparto} ({preset['fondo']})")
-st.caption("Netto = dopo tassa 20%/12,5% sui rendimenti e TER del comparto, "
-           "coerente col motore del montante. A sinistra lo storico reale, a "
-           "destra la previsione dal resampling.")
+st.subheader(f"📗 Rendimento per anno — {comparto} ({preset['fondo']})")
+st.caption("Rendimento della quota reale del comparto: già al netto di tasse "
+           "e costi di gestione finanziaria (li paga/scarica il fondo stesso "
+           "sulla quota). A sinistra lo storico reale (con lo stesso taglio "
+           "di orizzonte impostato in sidebar, se attivo), a destra la "
+           "previsione dal resampling. Il costo fisso amministrativo annuo "
+           "in euro resta comunque a parte, applicato sulla posizione "
+           "individuale (vedi tabella anno-per-anno più sotto).")
 
-ANNO_FINE_STORICO = 2025  # tutte le serie quote arrivano a fine 2025
 fondo_sel = preset["fondo"]
-serie_ann_sel = STORICO_ANNUALE.get(fondo_sel, {}).get(comparto, [])
+serie_ann_full = STORICO_ANNUALE.get(fondo_sel, {}).get(comparto, [])
+anni_ann_full = STORICO_ANNUALE_ANNI.get(fondo_sel, {}).get(comparto, [])
+serie_ann_sel = filtra_storico_da_anno(serie_ann_full, anni_ann_full, anno_inizio_storico)
+anni_lbl = [y for y in anni_ann_full if y >= anno_inizio_storico]
 
 col_a, col_b = st.columns(2)
 
 with col_a:
     st.markdown("**Storico reale (anno per anno)**")
     if serie_ann_sel:
-        anni_lbl = list(range(ANNO_FINE_STORICO - len(serie_ann_sel) + 1, ANNO_FINE_STORICO + 1))
-        netti_sel = rendimento_netto_comparto(serie_ann_sel, ter_fondo, quota_ts)
         df_stor = pd.DataFrame({
             "Anno": anni_lbl,
-            "Lordo (%)": [r * 100 for r in serie_ann_sel],
-            "Netto (%)": [float(r) * 100 for r in netti_sel],
+            "Rendimento (%)": [r * 100 for r in serie_ann_sel],
         })
         st.dataframe(
-            df_stor.style.format({"Lordo (%)": "{:+.2f}", "Netto (%)": "{:+.2f}"}),
+            df_stor.style.format({"Rendimento (%)": "{:+.2f}"}),
             use_container_width=True, hide_index=True, height=300,
         )
         cagr_l = float(np.prod([1 + r for r in serie_ann_sel])) ** (1 / len(serie_ann_sel)) - 1
-        cagr_n = float(np.prod([1 + float(r) for r in netti_sel])) ** (1 / len(netti_sel)) - 1
-        s1, s2, s3 = st.columns(3)
-        s1.metric("CAGR lordo", f"{cagr_l*100:.2f}%")
-        s2.metric("CAGR netto", f"{cagr_n*100:.2f}%")
-        s3.metric("Peggiore (netto)", f"{min(netti_sel)*100:+.1f}%")
+        s1, s2 = st.columns(2)
+        s1.metric("CAGR", f"{cagr_l*100:.2f}%")
+        s2.metric("Anno peggiore", f"{min(serie_ann_sel)*100:+.1f}%")
         if len(serie_ann_sel) < 8:
             st.caption(f"⚠️ Solo {len(serie_ann_sel)} anni disponibili: statistiche indicative.")
+        if anno_inizio_storico > ANNO_STORICO_MIN_GLOBALE and len(serie_ann_sel) < len(serie_ann_full):
+            st.caption(f"✂️ Storico tagliato: {len(serie_ann_full) - len(serie_ann_sel)} "
+                       f"anni esclusi (prima del {anno_inizio_storico}).")
     else:
-        st.info("Storico annuale non disponibile per questo comparto.")
+        st.info("Storico annuale non disponibile per questo comparto (o azzerato dal taglio impostato).")
 
 with col_b:
     st.markdown(f"**Previsione resampling** ({motore_txt})")
     key_sel = (fondo_sel, comparto)
     if key_sel in mat_per_comparto:
-        # Le matrici sono MENSILI: compongo prima in rendimenti annui, poi
-        # applico tassa/TER per il netto annuo.
         mat_annua = mensili_ad_annui(mat_per_comparto[key_sel])
-        net_mat = rendimento_netto_comparto(mat_annua, ter_fondo, quota_ts)
         df_prev = pd.DataFrame({
             "Anno": list(range(1, durata + 1)),
-            "P10 netto (%)": np.percentile(net_mat, 10, axis=0) * 100,
-            "P50 netto (%)": np.percentile(net_mat, 50, axis=0) * 100,
-            "P90 netto (%)": np.percentile(net_mat, 90, axis=0) * 100,
+            "P10 (%)": np.percentile(mat_annua, 10, axis=0) * 100,
+            "P50 (%)": np.percentile(mat_annua, 50, axis=0) * 100,
+            "P90 (%)": np.percentile(mat_annua, 90, axis=0) * 100,
         })
         st.dataframe(
             df_prev.style.format({c: "{:+.2f}" for c in df_prev.columns if c != "Anno"}),
             use_container_width=True, hide_index=True, height=300,
         )
-        st.caption(f"Rendimento netto annuo mediano simulato: "
-                   f"**{np.median(net_mat)*100:+.2f}%** (su tutti anni e scenari).")
+        st.caption(f"Rendimento annuo mediano simulato: "
+                   f"**{np.median(mat_annua)*100:+.2f}%** (su tutti anni e scenari).")
     else:
         st.info("Comparto non attivo all'anno 1 (cambio CCNL immediato?).")
 
@@ -1892,7 +1975,9 @@ st.dataframe(df_main[cols_show].style.format(fmt), use_container_width=True, hei
 
 st.caption(
     "⚠️ Stima illustrativa. Crescita salariale su dati ISTAT; contributi CCNL "
-    "Cometa/Fon.Te; costi/comparti da schede COVIP; rendimenti simulati con GBM o "
-    "bootstrap storico. La banda P10–P90 riflette l'incertezza dei rendimenti, non "
-    "quella di carriera. Non è consulenza finanziaria o previdenziale."
+    "Cometa/Fon.Te; rendimenti del fondo dal ricampionamento (block-bootstrap) "
+    "dello storico reale della quota, già al netto di tasse e costi di "
+    "gestione; PAC simulato con GBM (parametrico o da portafoglio ticker). La "
+    "banda P10–P90 riflette l'incertezza dei rendimenti, non quella di "
+    "carriera. Non è consulenza finanziaria o previdenziale."
 )
