@@ -1,7 +1,7 @@
 {
   "_istruzioni": "Questo file NON viene caricato (i file che iniziano con _ vengono ignorati dal loader). Copialo con un nuovo nome (es. mio_ccnl.json) e compila i campi per aggiungere un CCNL/fondo negoziale.",
 
-  "nome": "Nome CCNL da mostrare nel menu a tendina (es. 'Edilizia (Prevedi)')",
+  "nome": "Nome del solo CCNL da mostrare nel menu a tendina (es. 'Edilizia'). NON includere qui il fondo: il fondo è il campo separato qui sotto e viene già mostrato dall'app accanto alla selezione.",
   "fondo": "Nome del fondo pensione negoziale associato (es. 'Prevedi'). Deve combaciare con il nome del fondo usato nei CSV storici in data/<fondo>.csv, altrimenti il resampling storico non troverà i dati e l'app segnalerà un errore.",
 
   "contrib_lav_pct": 0.012,
@@ -46,17 +46,11 @@
   "scatti_max": 5,
   "_nota_scatti_max": "Numero massimo di scatti maturabili nel corso della carriera",
 
-  "comparti": {
-    "_nota": "Un blocco per ciascun comparto d'investimento del fondo. Le chiavi (es. 'Garantito') appaiono nel menu 'Comparto d'investimento' e devono combaciare ESATTAMENTE con i nomi delle colonne nel CSV storico data/<fondo>.csv, altrimenti il resampling storico non troverà la serie per quel comparto.",
-    "NomeComparto": {
-      "ter": 0.004,
-      "_nota_ter": "TER (Total Expense Ratio) annuo del comparto, in frazione (0.004 = 0,4%/anno)",
-      "rendimento_atteso": 0.02,
-      "_nota_rendimento_atteso": "Rendimento medio annuo ATTESO, usato SOLO dal motore GBM parametrico (non dal resampling storico). Frazione (0.02 = 2%/anno)",
-      "volatilita": 0.05,
-      "_nota_volatilita": "Volatilità annua ATTESA, usata SOLO dal motore GBM parametrico. Frazione (0.05 = 5%/anno)",
-      "quota_titoli_stato": 0.5,
-      "_nota_quota_titoli_stato": "Frazione del comparto investita in titoli di Stato/white list (0-1), usata per calcolare l'aliquota media sui rendimenti annuali del fondo (20% ordinario / 12,5% titoli di Stato)"
-    }
-  }
+  "comparti": [
+    "NomeComparto1",
+    "NomeComparto2"
+  ],
+  "_nota_comparti": "Semplice LISTA di nomi comparto. Ogni nome deve combaciare ESATTAMENTE con una colonna del CSV storico data/<fondo>.csv (es. se il tuo fondo si chiama 'Prevedi', serve data/prevedi.csv con quelle colonne). Il rendimento NON è un parametro qui: il motore usa sempre lo storico reale della quota, ricampionato dal CSV. Se un comparto non ha ancora dati storici, l'app lo segnalerà e non potrà essere simulato finché non aggiungi la colonna con lo storico nel CSV."
+}
+
 }
