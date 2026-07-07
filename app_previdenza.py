@@ -1283,6 +1283,11 @@ def simula_capitale(fattori, rend_fondo_mensili, rend_pac_mensili, sched, scal,
     ral_override = scal["ral_override"]
     ral_manuale = scal["ral_manuale"]
     ter_p = scal["ter_p"]
+    # Se il rendimento del PAC è GIÀ netto di TER (modalità portafoglio a
+    # ticker: il TER è incorporato nel NAV/prezzo Yahoo), NON va sottratto di
+    # nuovo qui, altrimenti si conta due volte. In modalità "Semplice" invece
+    # lo slider è un rendimento LORDO e il TER va applicato.
+    ter_gia_incluso_pac = scal.get("ter_gia_incluso_pac", False)
     tp = scal["tp"] / 100
     quota_ts_pac = scal.get("quota_ts_pac", 0.0)
     # Aliquota effettiva sulla plusvalenza PAC: 12,5% sulla quota in titoli di
@@ -1365,7 +1370,7 @@ def simula_capitale(fattori, rend_fondo_mensili, rend_pac_mensili, sched, scal,
         rata_azienda = ca_curr / 12.0
         rata_pac = vp_curr / 12.0
         rata_tfr = tfr_curr / 12.0
-        ter_p_m = 1 - (1 - ter_p) ** (1 / 12)
+        ter_p_m = 0.0 if ter_gia_incluso_pac else 1 - (1 - ter_p) ** (1 / 12)
         rt_m = (1 + rt) ** (1 / 12) - 1
 
         for mese in range(12):
@@ -1555,6 +1560,7 @@ vp_serie = costruisci_serie_a_gradini(durata, versamento_pac, variazioni_pac)
 scal = dict(
     ral_override=ral_override, ral_manuale=ral_manuale,
     ter_p=ter_pac, tp=tassa_uscita_pac, quota_ts_pac=quota_ts_pac,
+    ter_gia_incluso_pac=usa_portafoglio,
     rt=rend_tfr, tt=tassa_tfr,
     anni_pregressi=anni_gia_iscritto, uscita_ordinaria=uscita_ordinaria,
     cap_iniziale_fondo=capitale_iniziale_fondo,
@@ -1678,6 +1684,8 @@ anni_ann_full = STORICO_ANNUALE_ANNI.get(fondo_sel, {}).get(comparto, [])
 serie_ann_sel = filtra_storico_da_anno(serie_ann_full, anni_ann_full, anno_inizio_storico)
 anni_lbl = [y for y in anni_ann_full if y >= anno_inizio_storico]
 
+col_a, col_b = st.columns(2)
+
 st.markdown("**Storico reale (anno per anno)**")
 if serie_ann_sel:
     df_stor = pd.DataFrame({
@@ -1776,7 +1784,11 @@ with col_c:
 
 with col_d:
     st.markdown("**Previsione simulata**")
-    net_mat_pac = rendimento_netto_pac(mensili_ad_annui(rend_pac_mat), ter_pac)
+    # In modalità portafoglio a ticker i rendimenti sono GIÀ netti di TER
+    # (incorporato nel NAV/prezzo Yahoo): non va ri-sottratto, coerente col
+    # motore. In modalità "Semplice" lo slider è lordo, quindi il TER si toglie.
+    _ter_tabella_pac = 0.0 if usa_portafoglio else ter_pac
+    net_mat_pac = rendimento_netto_pac(mensili_ad_annui(rend_pac_mat), _ter_tabella_pac)
     df_prev_pac = pd.DataFrame({
         "Anno": list(range(1, durata + 1)),
         "P10 netto (%)": np.percentile(net_mat_pac, 10, axis=0) * 100,
