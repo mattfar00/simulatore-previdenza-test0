@@ -14,6 +14,7 @@ from pac_engine import (
     seleziona_traiettoria_per_percentile, genera_rendimenti_gbm,
     parse_ticker_pesi, scarica_prezzi_mensili, stima_parametri_portafoglio,
     genera_rendimenti_portafoglio_gbm,
+    cagr_da_mensili, shrink_verso_ancora, ricentra_mensili, MESI_PIENA_FIDUCIA,
 )
 from pac_avanzato import render_pac_avanzato
 
@@ -488,6 +489,40 @@ if anno_inizio_storico > ANNO_STORICO_MIN_GLOBALE:
         f"precedenti a quell'anno."
     )
 
+with st.sidebar.expander("🎯 Correzione realismo del drift (shrinkage)", expanded=False):
+    st.caption(
+        "La media di un campione corto è rumorosa e spesso riflette un solo "
+        "regime di mercato (es. bull 2015-oggi). Il drift usato dal bootstrap "
+        "viene corretto verso un'**ancora di lungo periodo**: "
+        "`drift = w·storico + (1−w)·ancora`, con `w = mesi/240` (20 anni = "
+        "piena fiducia allo storico). La correzione ricentra i rendimenti "
+        "mensili ricampionati preservando volatilità e sequenze. "
+        "Come ancora puoi usare la media secolare oppure una **Capital "
+        "Market Assumption** aggiornata (JPMorgan LTCMA, Vanguard, "
+        "BlackRock: pubbliche, riviste ogni anno)."
+    )
+    usa_shrinkage_fondo = st.checkbox("Applica shrinkage al fondo", value=True,
+                                      key="shrink_fondo_on")
+    ancora_azionario = st.number_input(
+        "Ancora comparti azionari (CAGR nominale %)", 0.0, 12.0, 6.5, 0.1,
+        key="anc_az", disabled=not usa_shrinkage_fondo)
+    ancora_bilanciato = st.number_input(
+        "Ancora comparti bilanciati/dinamici (%)", 0.0, 10.0, 4.0, 0.1,
+        key="anc_bil", disabled=not usa_shrinkage_fondo)
+    ancora_prudente = st.number_input(
+        "Ancora comparti garantiti/monetari (%)", 0.0, 8.0, 2.5, 0.1,
+        key="anc_pru", disabled=not usa_shrinkage_fondo)
+
+
+def ancora_per_comparto(nome_comparto: str) -> float:
+    """Classifica il comparto dal nome e ritorna l'ancora di lungo periodo."""
+    nl = nome_comparto.lower()
+    if any(k in nl for k in ("azion",)):
+        return ancora_azionario / 100.0
+    if any(k in nl for k in ("garant", "conserv", "monet", "prudent")):
+        return ancora_prudente / 100.0
+    return ancora_bilanciato / 100.0   # bilanciato/dinamico/sviluppo/crescita
+
 st.sidebar.caption("Banda P10–P90 mostrata su tutte le curve (200 scenari).")
 percentile_perf = st.sidebar.slider(
     "Percentile della linea centrale", 5, 95, 50, 5,
@@ -533,9 +568,10 @@ modo_pac = st.sidebar.radio(
 )
 usa_portafoglio = modo_pac.startswith("Portafoglio")
 
-rend_medio_pac, vol_pac = 0.07, 0.15   # fallback
+rend_medio_pac, vol_pac = 0.065, 0.15   # fallback (CAGR, non media aritmetica)
 tickers_input = pesi_input = ""
-anni_storico, override_rend, rend_override_val = 10, False, None
+anni_storico, override_rend, rend_override_val = 15, False, None
+usa_shrinkage_pac, ancora_pac = True, 0.065
 quota_ts_auto = 0.0
 ticker_bond_non_stimabili = []
 
@@ -618,18 +654,53 @@ if usa_portafoglio:
             for nome, ticker in etfs.items():
                 st.caption(f"`{ticker}` — {nome}")
 
-    anni_storico = st.sidebar.slider("Anni di storico per la stima", 5, 20, 10)
-    override_rend = st.sidebar.checkbox(
-        "Correggi a mano il rendimento atteso", value=True,
-        help="Consigliato: il rendimento medio storico è un cattivo predittore "
-             "del futuro. Volatilità e correlazioni restano quelle storiche.",
+    anni_storico = st.sidebar.slider(
+        "Anni di storico per la stima", 5, 20, 15,
+        help="Più anni = stima meno rumorosa e meno dipendente da un singolo "
+             "regime. Limite pratico: molti UCITS quotati a Milano nascono "
+             "dopo il 2015-2018, quindi lo storico comune può essere corto.",
     )
+    st.sidebar.markdown("**Drift del portafoglio (correzione realismo)**")
+    correzione_drift_pac = st.sidebar.radio(
+        "Come fissare il rendimento atteso",
+        ["Shrinkage automatico verso l'ancora", "Manuale (CAGR)", "Solo storico (sconsigliato)"],
+        index=0, key="corr_drift_pac",
+        help="Lo storico breve è un cattivo predittore: con 10 anni di dati e "
+             "vol 15% l'errore standard sulla media annua è ±4,7 punti. Lo "
+             "shrinkage pesa lo storico per w = mesi/240 e l'ancora per il "
+             "resto. Volatilità e correlazioni restano SEMPRE quelle storiche.",
+    )
+    override_rend = correzione_drift_pac.startswith("Manuale")
+    usa_shrinkage_pac = correzione_drift_pac.startswith("Shrinkage")
     if override_rend:
         rend_override_val = st.sidebar.slider(
-            "Rendimento atteso portafoglio (%)", 1.0, 12.0, 6.0, 0.1) / 100
+            "CAGR atteso portafoglio (%)", 1.0, 12.0, 6.0, 0.1,
+            help="Rendimento composto annuo: la traiettoria MEDIANA compone "
+                 "a questo tasso (correzione di Itô inclusa).") / 100
+    ancora_pac = st.sidebar.number_input(
+        "Ancora di lungo periodo portafoglio (CAGR %)", 0.0, 12.0, 6.5, 0.1,
+        key="anc_pac", disabled=not usa_shrinkage_pac,
+        help="Media secolare azionario mondiale ~6,5% nominale. In "
+             "alternativa inserisci una CMA aggiornata (JPMorgan LTCMA, "
+             "Vanguard), pesata per la tua allocazione azionario/bond.",
+    ) / 100
 else:
-    rend_medio_pac = st.sidebar.slider("Rendimento medio atteso PAC (%)", 1.0, 12.0, 7.0, 0.1) / 100
+    rend_medio_pac = st.sidebar.slider(
+        "Rendimento composto atteso PAC (CAGR, %)", 1.0, 12.0, 6.5, 0.1,
+        help="CAGR nominale LORDO: la traiettoria mediana compone esattamente "
+             "a questo tasso (il volatility drag è già incorporato — non "
+             "inserire una media aritmetica). Riferimenti: azionario globale "
+             "~6,5% secolare; 60/40 ~5%; bond ~2,5-3%.") / 100
     vol_pac        = st.sidebar.slider("Volatilità PAC (%)", 5.0, 25.0, 15.0, 0.5) / 100
+
+code_grasse_pac = st.sidebar.checkbox(
+    "Code grasse (T di Student, ν=5)", value=True, key="pac_tstudent",
+    help="Shock a code grasse invece della gaussiana: i percentili bassi "
+         "(P10) diventano più severi e realistici (i crash di mercato sono "
+         "più frequenti di quanto preveda la normale). Vale per i motori "
+         "GBM del PAC; il bootstrap del fondo ha già le code dei dati reali.",
+)
+NU_T_PAC = 5.0 if code_grasse_pac else 0.0
 
 ter_pac          = st.sidebar.number_input("TER PAC (%)", value=0.20, step=0.01) / 100
 tassa_uscita_pac = st.sidebar.slider("Tassazione Plusvalenze PAC (%)", 0, 26, 26)
@@ -1058,6 +1129,7 @@ avvisi_corti = []
 mancanti = []
 mat_per_comparto = {}
 SOGLIA_MESI_CORTI = 60
+info_shrinkage_fondo = []
 for ki, key in enumerate(comparto_keys):
     fondo_k, comp_k = key
     if mensile_disponibile(fondo_k, comp_k):
@@ -1066,6 +1138,17 @@ for ki, key in enumerate(comparto_keys):
         serie = tuple(filtra_storico_da_anno(serie_full, anni_full, anno_inizio_storico))
         if len(serie) < SOGLIA_MESI_CORTI:
             avvisi_corti.append(f"{fondo_k} · {comp_k} ({len(serie)} mesi)")
+        # --- SHRINKAGE: ricentra la serie verso l'ancora di lungo periodo ---
+        if usa_shrinkage_fondo and serie:
+            cagr_camp = cagr_da_mensili(serie)
+            ancora_k = ancora_per_comparto(comp_k)
+            cagr_corr, w_camp = shrink_verso_ancora(cagr_camp, len(serie), ancora_k)
+            serie = tuple(ricentra_mensili(serie, cagr_corr))
+            info_shrinkage_fondo.append(
+                f"{fondo_k} · {comp_k}: {len(serie)} mesi, CAGR storico "
+                f"{cagr_camp*100:.2f}% → corretto {cagr_corr*100:.2f}% "
+                f"(peso storico {w_camp*100:.0f}%, ancora {ancora_k*100:.1f}%)"
+            )
         try:
             mat_per_comparto[key] = genera_rendimenti_block_bootstrap(
                 serie, durata, block=int(block_mesi), n=N_BAND, seed=st.session_state.master_seed + ki)
@@ -1093,25 +1176,46 @@ for a, s in enumerate(sched):
 # --- PAC: GBM parametrico / portafoglio ticker (da pac_engine) ---
 portafoglio_info = None
 errore_portafoglio = None
+info_drift_pac = None
 if usa_portafoglio:
     if not tickers_input.strip():
         errore_portafoglio = "Nessun ticker selezionato: usa il catalogo o inseriscine uno."
-        rend_pac_mat = genera_rendimenti_gbm(0.07, 0.15, durata, n=N_BAND, seed=st.session_state.master_seed + 100)
+        rend_pac_mat = genera_rendimenti_gbm(0.065, 0.15, durata, n=N_BAND,
+                                             seed=st.session_state.master_seed + 100, nu=NU_T_PAC)
     else:
         try:
             tickers, pesi = parse_ticker_pesi(tickers_input, pesi_input)
             prezzi_df = scarica_prezzi_mensili(tuple(tickers), anni_storico)
             portafoglio_info = stima_parametri_portafoglio(prezzi_df, pesi)
-            rend_override_eff = rend_override_val if override_rend else None
+            # --- Drift: manuale, shrinkage verso l'ancora, o solo storico ---
+            cagr_storico = portafoglio_info["cagr_portafoglio"]
+            n_mesi = portafoglio_info["n_mesi_storico"]
+            if override_rend:
+                cagr_target = rend_override_val
+                info_drift_pac = (f"Drift manuale: CAGR {cagr_target*100:.2f}% "
+                                  f"(storico {cagr_storico*100:.2f}% su {n_mesi} mesi)")
+            elif usa_shrinkage_pac:
+                cagr_target, w_camp = shrink_verso_ancora(cagr_storico, n_mesi, ancora_pac)
+                info_drift_pac = (f"Shrinkage: CAGR storico {cagr_storico*100:.2f}% "
+                                  f"({n_mesi} mesi, peso {w_camp*100:.0f}%) + ancora "
+                                  f"{ancora_pac*100:.1f}% → target {cagr_target*100:.2f}%")
+            else:
+                cagr_target = None
+                info_drift_pac = (f"⚠️ Solo storico: CAGR campione {cagr_storico*100:.2f}% "
+                                  f"su {n_mesi} mesi estrapolato per {durata} anni — "
+                                  f"rischio di forte sovrastima.")
             rend_pac_mat = genera_rendimenti_portafoglio_gbm(
                 portafoglio_info["media_mensile"], portafoglio_info["cholesky_mensile"],
-                pesi, durata, rend_override=rend_override_eff, n=N_BAND, seed=st.session_state.master_seed + 200,
+                pesi, durata, cagr_target=cagr_target, n=N_BAND,
+                seed=st.session_state.master_seed + 200, nu=NU_T_PAC,
             )
         except Exception as e:
             errore_portafoglio = str(e)
-            rend_pac_mat = genera_rendimenti_gbm(0.07, 0.15, durata, n=N_BAND, seed=st.session_state.master_seed + 100)
+            rend_pac_mat = genera_rendimenti_gbm(0.065, 0.15, durata, n=N_BAND,
+                                                 seed=st.session_state.master_seed + 100, nu=NU_T_PAC)
 else:
-    rend_pac_mat = genera_rendimenti_gbm(rend_medio_pac, vol_pac, durata, n=N_BAND, seed=st.session_state.master_seed + 100)
+    rend_pac_mat = genera_rendimenti_gbm(rend_medio_pac, vol_pac, durata, n=N_BAND,
+                                         seed=st.session_state.master_seed + 100, nu=NU_T_PAC)
 
 # --- Traiettorie centrali (per la tabella e la linea centrale) ---
 rend_fondo_sel = seleziona_traiettoria_per_percentile(rend_fondo_mat, percentile_perf)
@@ -1146,6 +1250,8 @@ anni = list(range(1, durata + 1))
 # INTESTAZIONE
 # ---------------------------------------------------------------------------
 motore_txt = f"Block-bootstrap mensile (blocco {int(block_mesi)} mesi)"
+if usa_shrinkage_fondo:
+    motore_txt += " + shrinkage del drift"
 st.info(
     f"**Profilo:** {tipo_lavoratore} · {ccnl_scelto} · livello {livello} · comparto {comparto}  \n"
     f"Coefficiente crescita ×{coeff_totale:.2f} · crescita di base "
@@ -1162,6 +1268,19 @@ if avvisi_corti:
         + ". La banda P10–P90 per questi comparti dipende da un numero limitato "
           "di osservazioni sottostanti: trattala con più cautela."
     )
+
+if info_shrinkage_fondo:
+    with st.expander("🎯 Correzione del drift applicata (fondo)"):
+        for riga in info_shrinkage_fondo:
+            st.caption("• " + riga)
+        st.caption(
+            "Il CAGR del campione viene spostato verso l'ancora di lungo "
+            "periodo in proporzione alla brevità dello storico (peso storico "
+            f"= mesi/{MESI_PIENA_FIDUCIA}). Volatilità, correlazioni e "
+            "sequenze dei mesi reali restano invariate."
+        )
+if info_drift_pac:
+    st.caption("🎯 **PAC (portafoglio):** " + info_drift_pac)
 
 if usa_cambio_ccnl and cambi_ccnl:
     st.caption(
@@ -1437,19 +1556,22 @@ if usa_portafoglio:
             )
 
         pc1, pc2, pc3 = st.columns(3)
-        pc1.metric("Rendimento storico annuo (composto)", f"{pi['rend_portafoglio']*100:.2f}%")
+        pc1.metric("CAGR storico (composto)", f"{pi['cagr_portafoglio']*100:.2f}%",
+                   help=f"Media aritmetica annualizzata: {pi['rend_portafoglio']*100:.2f}% "
+                        "(più alta del CAGR per il volatility drag ~σ²/2). "
+                        "Il drift della simulazione parte dal CAGR.")
         pc2.metric("Volatilità storica annua", f"{pi['vol_portafoglio']*100:.2f}%")
         pc3.metric("Asset nel portafoglio", f"{len(pi['tickers'])}")
 
         if override_rend:
-            st.info(f"Rendimento atteso corretto a mano a {rend_override_val*100:.1f}% "
+            st.info(f"Drift corretto a mano: CAGR mediano {rend_override_val*100:.1f}% "
                     f"(volatilità/correlazioni restano storiche).")
 
         nomi_leggibili = [TICKER_TO_NOME.get(t, t) for t in pi["tickers"]]
         df_asset = pd.DataFrame({
             "Nome": nomi_leggibili, "Ticker": pi["tickers"],
             "Peso (%)": (pesi * 100).round(1),
-            "Rend. annuo storico (%)": (pi["rend_annuo_asset"] * 100).round(2),
+            "CAGR storico (%)": (pi["cagr_asset"] * 100).round(2),
             "Volatilità annua (%)": (pi["vol_annua_asset"] * 100).round(2),
         })
         st.dataframe(df_asset, use_container_width=True, hide_index=True)
@@ -1605,7 +1727,7 @@ _ctx_backtest = {
 
 _tab_pv, _tab_motore, _tab_pav = st.tabs(
     ["📈 Backtest (growth asset)", "🏦 Backtest via motore (TFR/IRPEF)",
-     "🧪 PAC avanzato"]
+     "🧪 PAC (ticker o manuale)"]
 )
 with _tab_pv:
     render_backtest_tab(_ctx_backtest)
@@ -1613,3 +1735,4 @@ with _tab_motore:
     render_backtest_via_motore(_ctx_backtest)
 with _tab_pav:
     render_pac_avanzato(_ctx_backtest)
+
