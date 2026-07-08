@@ -121,22 +121,91 @@ def seleziona_traiettoria_per_percentile(rendimenti: np.ndarray, percentile: int
 
 
 # ---------------------------------------------------------------------------
+# SHRINKAGE DEL DRIFT VERSO UN'ANCORA DI LUNGO PERIODO
+# ---------------------------------------------------------------------------
+# La media stimata su un campione corto e' molto rumorosa (con 10 anni di dati
+# e vol 15% l'errore standard sulla media annua e' ~4,7 punti). La correzione
+# standard (stile Bayes/James-Stein) e' combinare la stima campionaria con
+# un'ancora di lungo periodo:  drift = w*storico + (1-w)*ancora,
+# con w = mesi_campione / MESI_PIENA_FIDUCIA (cap a 1).
+# L'ancora e' un input dell'utente: puo' essere la media secolare (~6,5%
+# nominale per l'azionario mondiale) o una Capital Market Assumption
+# aggiornata (JPMorgan LTCMA, Vanguard, BlackRock: pubbliche e gratuite).
+MESI_PIENA_FIDUCIA = 240  # 20 anni: oltre, lo storico pesa il 100%
+
+
+def cagr_da_mensili(serie_mensile) -> float:
+    """CAGR annuo (geometrico) da una serie di rendimenti mensili semplici."""
+    serie = np.asarray(serie_mensile, dtype=float)
+    if serie.size == 0:
+        return 0.0
+    log_tot = np.sum(np.log1p(serie))
+    return float(np.exp(log_tot * 12.0 / serie.size) - 1.0)
+
+
+def shrink_verso_ancora(cagr_campione: float, n_mesi: int, ancora: float,
+                        mesi_pieni: int = MESI_PIENA_FIDUCIA):
+    """
+    Ritorna (cagr_corretto, peso_campione). peso = min(1, n_mesi/mesi_pieni).
+    """
+    w = min(1.0, max(0.0, n_mesi / float(mesi_pieni)))
+    return w * cagr_campione + (1.0 - w) * ancora, w
+
+
+def ricentra_mensili(serie_mensile, cagr_target: float):
+    """
+    Ricentra una serie di rendimenti mensili in modo MOLTIPLICATIVO cosicche'
+    il suo CAGR diventi esattamente `cagr_target`, preservando volatilita',
+    autocorrelazione e forma della distribuzione (a meno di una traslazione
+    dei log-rendimenti). Usata per correggere le serie prima del bootstrap.
+    """
+    serie = np.asarray(serie_mensile, dtype=float)
+    if serie.size == 0:
+        return serie
+    cagr_camp = cagr_da_mensili(serie)
+    fattore = ((1.0 + cagr_target) / (1.0 + cagr_camp)) ** (1.0 / 12.0)
+    return (1.0 + serie) * fattore - 1.0
+
+
+def _shock_t_student(rng, size, nu, condividi_righe=False):
+    """
+    Shock a code grasse: T di Student con nu gradi di liberta', riscalata a
+    varianza unitaria (nu>2). Con nu=None/0 ritorna normali standard.
+    Con condividi_righe=True e size 2D (periodi x asset) il fattore
+    chi-quadro e' unico per riga: T multivariata, le code arrivano
+    INSIEME su tutti gli asset dello stesso mese (crash congiunti).
+    """
+    if not nu or nu <= 2:
+        return rng.standard_normal(size)
+    z = rng.standard_normal(size)
+    if condividi_righe and len(size) == 2:
+        g = rng.chisquare(nu, size=(size[0], 1)) / nu   # condiviso sugli asset
+    else:
+        g = rng.chisquare(nu, size=size) / nu
+    return z / np.sqrt(g) * np.sqrt((nu - 2.0) / nu)
+
+
+# ---------------------------------------------------------------------------
 # GBM PARAMETRICO MENSILE (modalità PAC "Semplice" + fallback)
 # ---------------------------------------------------------------------------
 @st.cache_data
-def genera_rendimenti_gbm(rend_medio: float, vol: float, durata: int,
-                          n: int = 200, seed: int = 7):
+def genera_rendimenti_gbm(rend_cagr: float, vol: float, durata: int,
+                          n: int = 200, seed: int = 7, nu: float = 0.0):
     """
-    GBM lognormale MENSILE. `rend_medio` e `vol` sono parametri ANNUI,
-    convertiti in mensili. Ritorna (n x durata*12).
+    GBM lognormale MENSILE. `rend_cagr` e' il rendimento composto annuo
+    (CAGR) atteso: la traiettoria MEDIANA compone esattamente a quel tasso.
+    (La media aritmetica implicita e' piu' alta di ~vol^2/2: la correzione
+    di Ito' e' incorporata nella parametrizzazione del log-drift.)
+    `vol` e' la volatilita' annua. `nu`>2 attiva code grasse (T di Student).
+    Ritorna (n x durata*12).
     """
     rng = np.random.default_rng(seed)
-    rend_m = (1 + rend_medio) ** (1 / 12) - 1
+    rend_m = (1 + rend_cagr) ** (1 / 12) - 1
     vol_m = vol / np.sqrt(12)
     sigma = np.sqrt(np.log(1 + (vol_m**2) / ((1 + rend_m)**2)))
-    mu = np.log(1 + rend_m) - 0.5 * sigma**2
-    shocks = rng.normal(mu, sigma, size=(n, durata * 12))
-    return np.exp(shocks) - 1.0
+    mu = np.log(1 + rend_m)   # mediana mensile = (1+CAGR)^(1/12)
+    z = _shock_t_student(rng, (n, durata * 12), nu)
+    return np.exp(mu + sigma * z) - 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +274,12 @@ def stima_parametri_portafoglio(prezzi_df: pd.DataFrame, pesi: np.ndarray):
     cov_reg = cov_mensile + np.eye(len(pesi)) * 1e-10
     L = np.linalg.cholesky(cov_reg)
     rend_mensili_pesato = (rend_mensili.values @ pesi)
+    # CAGR (geometrico) del portafoglio ribilanciato mensilmente: e' il tasso
+    # a cui il campione ha COMPOSTO davvero — sempre < media aritmetica
+    # annualizzata (vol drag ~ sigma^2/2). E' la base per lo shrinkage.
+    cagr_portafoglio = cagr_da_mensili(rend_mensili_pesato)
+    cagr_asset = np.array([cagr_da_mensili(rend_mensili[c].values)
+                           for c in rend_mensili.columns])
     return {
         "tickers": list(prezzi_df.columns),
         "rend_annuo_asset": rend_annuo_asset,
@@ -214,6 +289,8 @@ def stima_parametri_portafoglio(prezzi_df: pd.DataFrame, pesi: np.ndarray):
         "cholesky_mensile": L,
         "rend_portafoglio": rend_portafoglio,
         "vol_portafoglio": vol_portafoglio,
+        "cagr_portafoglio": cagr_portafoglio,
+        "cagr_asset": cagr_asset,
         "n_mesi_storico": len(rend_mensili),
         "prezzi_df": prezzi_df,
         "rend_mensili_pesato": rend_mensili_pesato,
@@ -222,26 +299,38 @@ def stima_parametri_portafoglio(prezzi_df: pd.DataFrame, pesi: np.ndarray):
 
 @st.cache_data(show_spinner=False)
 def genera_rendimenti_portafoglio_gbm(media_mensile, cholesky_mensile, pesi,
-                                      durata_anni: int, rend_override=None,
-                                      n: int = 200, seed: int = 13):
+                                      durata_anni: int, cagr_target=None,
+                                      n: int = 200, seed: int = 13,
+                                      nu: float = 0.0):
     """
     Traiettorie MENSILI del portafoglio (n x durata*12) con shock correlati
-    (Cholesky). Se rend_override è dato, il drift viene TRASLATO (non scalato)
-    di una costante uguale per tutti gli asset.
+    (Cholesky). Se `cagr_target` e' dato (CAGR annuo composto, tipicamente
+    dallo shrinkage verso l'ancora di lungo periodo), il drift viene
+    TRASLATO di una costante uguale per tutti gli asset in modo che la
+    traiettoria MEDIANA del portafoglio componga ~ a quel tasso.
+
+    Correzione di Ito': il drift aritmetico mensile necessario e'
+        mu_arit = (1+CAGR)^(1/12) - 1 + sigma_p_m^2 / 2
+    perche' componendo rendimenti semplici con rumore, la mediana perde
+    ~sigma^2/2 rispetto alla media aritmetica (volatility drag).
+    `nu`>2 attiva code grasse (T di Student multivariata: il fattore di
+    coda e' condiviso tra gli asset dello stesso mese).
     """
     rng = np.random.default_rng(seed)
     n_asset = len(pesi)
     mesi_tot = durata_anni * 12
     drift = media_mensile.copy()
-    if rend_override is not None:
-        target_m = (1 + rend_override) ** (1 / 12) - 1
+    if cagr_target is not None:
+        sig_p_m = float(np.linalg.norm(cholesky_mensile.T @ np.asarray(pesi)))
+        target_m = (1 + cagr_target) ** (1 / 12) - 1 + 0.5 * sig_p_m ** 2
         attuale_m = float(np.dot(pesi, drift))
         drift = drift + (target_m - attuale_m)
 
     traiettorie = np.zeros((n, mesi_tot))
     for s in range(n):
-        z = rng.standard_normal((mesi_tot, n_asset))
+        z = _shock_t_student(rng, (mesi_tot, n_asset), nu, condividi_righe=True)
         shock_mensili = z @ cholesky_mensile.T
         rend_mensili_asset = drift + shock_mensili
         traiettorie[s] = rend_mensili_asset @ pesi
     return traiettorie
+
