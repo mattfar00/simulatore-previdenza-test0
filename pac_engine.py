@@ -54,6 +54,25 @@ CATALOGO_ETF = {
 TICKER_TO_NOME = {t: nome for cat in CATALOGO_ETF.values() for nome, t in cat.items()}
 WHITELIST_ACC_UCITS = set(TICKER_TO_NOME.keys())
 
+# Classi di asset per il modello multi-bucket del tab PAC unificato.
+# "Azioni singole" e' per stock individuali da input manuale (es. AAPL,
+# ENI.MI): bucket separato, cosi' il rischio idiosincratico non inquina
+# la stima della classe azionaria diversificata.
+CLASSI_ASSET = ["Azionario", "Obbligazionario", "Oro/Materie prime",
+                "Immobiliare", "Azioni singole"]
+_CATEGORIA_TO_CLASSE = {
+    "Azionario Globale": "Azionario",
+    "Azionario USA": "Azionario",
+    "Azionario Europa": "Azionario",
+    "Azionario Mercati Emergenti": "Azionario",
+    "Obbligazionario": "Obbligazionario",
+    "Oro e Materie Prime": "Oro/Materie prime",
+    "Immobiliare (REIT)": "Immobiliare",
+}
+TICKER_TO_CLASSE = {t: _CATEGORIA_TO_CLASSE.get(cat_nome, "Azionario")
+                    for cat_nome, etfs in CATALOGO_ETF.items()
+                    for t in etfs.values()}
+
 # Quota "titoli di Stato/white list" per ticker (aliquota ridotta 12,5%).
 # Solo i ticker con composizione inequivocabile; i misti vanno impostati a mano.
 QUOTA_TITOLI_STATO_TICKER = {
@@ -333,4 +352,5 @@ def genera_rendimenti_portafoglio_gbm(media_mensile, cholesky_mensile, pesi,
         rend_mensili_asset = drift + shock_mensili
         traiettorie[s] = rend_mensili_asset @ pesi
     return traiettorie
+
 
