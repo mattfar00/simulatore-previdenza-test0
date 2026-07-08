@@ -433,9 +433,12 @@ st.sidebar.caption(
 )
 
 vers_vol_extra = st.sidebar.number_input(
-    "Versamento volontario AGGIUNTIVO annuo (€)", min_value=0, value=1000, step=100,
-    help="Oltre al contributo minimo previsto dal CCNL. Deducibile dall'IRPEF. "
-         "Resta FISSO nel tempo a meno di variazioni pianificate qui sotto.",
+    "Versamento volontario annuo (€)", min_value=0, value=1000, step=100,
+    help="È il TUO flusso totale al fondo (oltre a TFR e contributo azienda). "
+         "Deve coprire ALMENO il minimo CCNL (~0,5-0,7% dei minimi tabellari): "
+         "sotto quella soglia perdi il diritto al contributo aziendale. "
+         "Deducibile dall'IRPEF. Resta FISSO nel tempo a meno di variazioni "
+         "pianificate qui sotto.",
 )
 usa_variazioni_vol_extra = st.sidebar.checkbox(
     "Pianifica variazioni di questo versamento nel tempo", value=False,
@@ -572,6 +575,7 @@ rend_medio_pac, vol_pac = 0.065, 0.15   # fallback (CAGR, non media aritmetica)
 tickers_input = pesi_input = ""
 anni_storico, override_rend, rend_override_val = 15, False, None
 usa_shrinkage_pac, ancora_pac = True, 0.065
+usa_bootstrap_pac = False
 quota_ts_auto = 0.0
 ticker_bond_non_stimabili = []
 
@@ -660,6 +664,19 @@ if usa_portafoglio:
              "regime. Limite pratico: molti UCITS quotati a Milano nascono "
              "dopo il 2015-2018, quindi lo storico comune può essere corto.",
     )
+    motore_pac = st.sidebar.radio(
+        "Motore Monte Carlo del PAC",
+        ["GBM multivariato (Cholesky)", "Block-bootstrap storico"],
+        index=0, key="pac_motore",
+        help="Come nel tab PAC: **GBM** genera rendimenti casuali dai parametri "
+             "stimati (lognormale, correlazioni via Cholesky); **bootstrap** "
+             "ricampiona a blocchi la serie storica PESATA del portafoglio "
+             "(blocco = quello impostato per il fondo, sezione 4). In entrambi "
+             "i casi si applica il drift corretto qui sotto. Qui niente "
+             "derisking/decumulo: accumulo puro a pesi fissi.",
+    )
+    usa_bootstrap_pac = motore_pac.startswith("Block")
+
     st.sidebar.markdown("**Drift del portafoglio (correzione realismo)**")
     correzione_drift_pac = st.sidebar.radio(
         "Come fissare il rendimento atteso",
@@ -1007,9 +1024,13 @@ def simula_capitale(fattori, rend_fondo_mensili, rend_pac_mensili, sched, scal,
         base_contrib = s["base_contrib"]
 
         tfr_curr = ral_curr * s["tfr_pct"] if occupato else 0.0
-        ca_curr = base_contrib * s["ca_pct"]
+        # Il minimo CCNL NON e' un flusso aggiuntivo: e' il requisito che dà
+        # diritto al contributo aziendale. Il flusso del lavoratore e' SOLO
+        # il versamento volontario impostato, che deve coprire il minimo.
         vol_min = base_contrib * s["lav_pct"]
-        vf_curr = vol_min + (vol_extra_serie[a] if occupato else 0.0)
+        vf_curr = vol_extra_serie[a] if occupato else 0.0
+        diritto_azienda = occupato and vf_curr >= vol_min - 1e-9
+        ca_curr = base_contrib * s["ca_pct"] if diritto_azienda else 0.0
         vp_curr = vp_serie[a] if occupato else 0.0
 
         if occupato and (vf_curr + ca_curr) > 0:
@@ -1062,8 +1083,9 @@ def simula_capitale(fattori, rend_fondo_mensili, rend_pac_mensili, sched, scal,
             "Scatti": s["scatti"],
             "Occupato": "Sì" if occupato else "No",
             "RAL (€)": ral_curr,
-            "Contrib. Min. CCNL (€)": vol_min,
-            "Vers. Volontario (€)": (vol_extra_serie[a] if occupato else 0.0),
+            "Minimo CCNL richiesto (€)": vol_min,
+            "Diritto contrib. azienda": "Sì" if diritto_azienda else ("—" if not occupato else "NO"),
+            "Vers. Volontario (€)": vf_curr,
             "TFR al Fondo (€)": tfr_curr,
             "Contrib. Aziendale (€)": ca_curr,
             "Risparmio IRPEF (€)": risparmio_anno,
@@ -1204,11 +1226,22 @@ if usa_portafoglio:
                 info_drift_pac = (f"⚠️ Solo storico: CAGR campione {cagr_storico*100:.2f}% "
                                   f"su {n_mesi} mesi estrapolato per {durata} anni — "
                                   f"rischio di forte sovrastima.")
-            rend_pac_mat = genera_rendimenti_portafoglio_gbm(
-                portafoglio_info["media_mensile"], portafoglio_info["cholesky_mensile"],
-                pesi, durata, cagr_target=cagr_target, n=N_BAND,
-                seed=st.session_state.master_seed + 200, nu=NU_T_PAC,
-            )
+            if usa_bootstrap_pac:
+                # Block-bootstrap sulla serie storica PESATA del portafoglio,
+                # ricentrata sul CAGR target (stessa tecnica del fondo):
+                # vol, correlazioni e sequenze restano quelle reali.
+                serie_pac = np.asarray(portafoglio_info["rend_mensili_pesato"], dtype=float)
+                if cagr_target is not None:
+                    serie_pac = ricentra_mensili(serie_pac, cagr_target)
+                rend_pac_mat = genera_rendimenti_block_bootstrap(
+                    tuple(np.round(serie_pac, 10)), durata, block=int(block_mesi),
+                    n=N_BAND, seed=st.session_state.master_seed + 200)
+            else:
+                rend_pac_mat = genera_rendimenti_portafoglio_gbm(
+                    portafoglio_info["media_mensile"], portafoglio_info["cholesky_mensile"],
+                    pesi, durata, cagr_target=cagr_target, n=N_BAND,
+                    seed=st.session_state.master_seed + 200, nu=NU_T_PAC,
+                )
         except Exception as e:
             errore_portafoglio = str(e)
             rend_pac_mat = genera_rendimenti_gbm(0.065, 0.15, durata, n=N_BAND,
@@ -1280,7 +1313,21 @@ if info_shrinkage_fondo:
             "sequenze dei mesi reali restano invariate."
         )
 if info_drift_pac:
-    st.caption("🎯 **PAC (portafoglio):** " + info_drift_pac)
+    _motore_pac_txt = ("block-bootstrap storico (blocco "
+                       f"{int(block_mesi)} mesi)") if usa_bootstrap_pac else "GBM-Cholesky"
+    st.caption("🎯 **PAC (portafoglio):** " + info_drift_pac +
+               f" · motore: {_motore_pac_txt}")
+
+_anni_senza_azienda = df_main.loc[df_main["Diritto contrib. azienda"] == "NO", "Anno"].tolist()
+if _anni_senza_azienda:
+    st.warning(
+        "⚠️ **Contributo aziendale PERSO negli anni: "
+        + ", ".join(str(int(x)) for x in _anni_senza_azienda)
+        + "** — il versamento volontario in quegli anni è sotto il minimo "
+          "CCNL richiesto (vedi colonne 'Minimo CCNL richiesto' e 'Diritto "
+          "contrib. azienda' in tabella). Alza il versamento almeno al "
+          "minimo per non lasciare soldi dell'azienda sul tavolo."
+    )
 
 if usa_cambio_ccnl and cambi_ccnl:
     st.caption(
@@ -1504,7 +1551,7 @@ st.divider()
 # ---------------------------------------------------------------------------
 st.subheader("💳 Costo Mensile Effettivo (Anno 1)")
 r0 = df_main.iloc[0]
-vers_vol_anno1 = r0["Contrib. Min. CCNL (€)"] + r0["Vers. Volontario (€)"]
+vers_vol_anno1 = r0["Vers. Volontario (€)"]   # il minimo CCNL non è un flusso aggiuntivo
 risparmio_anno1 = r0["Risparmio IRPEF (€)"]
 ca_anno1 = r0["Contrib. Aziendale (€)"]
 pac_anno1 = r0["PAC annuo (€)"]
@@ -1687,22 +1734,25 @@ st.subheader("📋 Dettaglio Anno per Anno")
 st.caption("Montanti = linea centrale P{}. Contributi e RAL crescono con carriera/inflazione.".format(percentile_perf))
 
 cols_show = ["Anno", "CCNL", "Livello", "Comparto", "Scatti", "Occupato", "RAL (€)",
-             "Contrib. Min. CCNL (€)", "Vers. Volontario (€)", "TFR al Fondo (€)",
+             "Minimo CCNL richiesto (€)", "Diritto contrib. azienda",
+             "Vers. Volontario (€)", "TFR al Fondo (€)",
              "Contrib. Aziendale (€)", "Risparmio IRPEF (€)", "PAC annuo (€)",
              "Aliq. uscita fondo (%)", "Fondo Netto (€)", "PAC + TFR Netto (€)", "PAC Netto (€)"]
 if usa_entrambi:
     cols_show.append("Fondo + PAC Netto (€)")
 
 fmt = {c: "€ {:,.0f}" for c in cols_show
-       if c not in ("Anno", "CCNL", "Livello", "Comparto", "Scatti", "Occupato", "Aliq. uscita fondo (%)")}
+       if c not in ("Anno", "CCNL", "Livello", "Comparto", "Scatti", "Occupato",
+                    "Diritto contrib. azienda", "Aliq. uscita fondo (%)")}
 fmt["Aliq. uscita fondo (%)"] = "{:.1f}%"
 st.dataframe(df_main[cols_show].style.format(fmt), use_container_width=True, height=420)
 
 st.caption(
     "⚠️ Stima illustrativa. Crescita salariale su dati ISTAT; contributi CCNL "
     "Cometa/Fon.Te; rendimenti del fondo dal ricampionamento dello storico "
-    "reale della quota; PAC simulato con GBM (parametrico o da portafoglio "
-    "ticker). Non è consulenza finanziaria o previdenziale."
+    "reale della quota; PAC simulato con GBM o block-bootstrap della serie "
+    "pesata del portafoglio ticker (drift corretto via shrinkage). "
+    "Non è consulenza finanziaria o previdenziale."
 )
 st.divider()
 
