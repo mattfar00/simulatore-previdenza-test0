@@ -5,17 +5,18 @@
 #     render_pac_avanzato(ctx)
 # da chiamare in un tab dell'app principale. NON tocca il motore esistente.
 #
-# PRINCIPIO GUIDA: nessun parametro di rendimento/rischio e' inventato o
-# lasciato a uno slider manuale. Sia il bootstrap che il GBM-Cholesky
-# stimano mu/sigma/rho dagli STESSI dati storici scaricati da Yahoo Finance
-# per il portafoglio ticker gia' configurato nella sidebar del PAC (sezione
-# "5. PAC (ETF)" > "Portafoglio ticker"). L'utente sceglie solo la
-# METODOLOGIA di ricampionamento (bootstrap vs parametrico), mai i numeri.
+# SEZIONE PAC UNIFICATA: questo tab assorbe anche il vecchio "PAC semplice".
+# Due fonti per i parametri (rendimento/rischio/correlazione):
+#   a) PORTAFOGLIO TICKER (preferita): mu/sigma/rho stimati dai dati storici
+#      Yahoo del portafoglio configurato in sidebar ("5. PAC (ETF)" >
+#      "Portafoglio ticker"), con correzione del drift (shrinkage verso
+#      ancora di lungo periodo / manuale / solo storico).
+#   b) PARAMETRI MANUALI a 2 asset (CAGR, vol, rho scelti dall'utente):
+#      disponibile sempre, unica opzione se il portafoglio ticker manca.
+#      In questa modalita' il motore e' solo GBM (il bootstrap richiede
+#      serie storiche reali).
 #
 # Caratteristiche:
-# - Richiede il portafoglio a ticker configurato in sidebar (stessa fonte
-#   dati di tutto il resto dell'app). Se non e' presente, il tab spiega come
-#   attivarlo e si ferma: NIENTE fallback su assunzioni parametriche a mano.
 # - I ticker vengono classificati Azionario/Obbligazionario (preselezione
 #   automatica in base al nome, correggibile) e da li' si costruiscono due
 #   serie mensili aggregate (equal-weight) usate per stimare mu, sigma, rho.
@@ -55,15 +56,27 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from pac_engine import (cagr_da_mensili, shrink_verso_ancora, ricentra_mensili,
+                        _shock_t_student, MESI_PIENA_FIDUCIA)
+
 
 # ---------------------------------------------------------------------------
 # GENERATORI DI RENDIMENTI MENSILI (n scenari x mesi x 2 asset)
 # ---------------------------------------------------------------------------
-def genera_gbm_cholesky(mu_e, sig_e, mu_b, sig_b, rho, mesi, n, seed, kappa=0.0):
+def genera_gbm_cholesky(mu_e, sig_e, mu_b, sig_b, rho, mesi, n, seed,
+                        kappa=0.0, nu=0.0):
     """
     GBM lognormale mensile a 2 asset con shock correlati via Cholesky sulla
     matrice di correlazione (Markowitz: la covarianza e' rho*se*sb) e mean
     reversion opzionale (kappa per anno, 0 = GBM puro).
+
+    `mu_e`/`mu_b` sono CAGR annui (rendimento composto): la traiettoria
+    MEDIANA di ogni asset compone esattamente a quel tasso. Il volatility
+    drag e' incorporato nella parametrizzazione lognormale (correzione di
+    Ito': la media aritmetica implicita e' ~sigma^2/2 sopra il CAGR).
+    `nu`>2 attiva code grasse: T di Student multivariata, con fattore di
+    coda CONDIVISO dai due asset nello stesso mese (i crash arrivano
+    insieme su azionario e obbligazionario).
 
     Mean reversion: sul log-prezzo cumulato X_t di ciascun asset,
         r_t = mu_log + (kappa/12) * (mu_log * t - X_t) + shock_t
@@ -77,9 +90,9 @@ def genera_gbm_cholesky(mu_e, sig_e, mu_b, sig_b, rho, mesi, n, seed, kappa=0.0)
     mu_m = (1.0 + mu) ** (1.0 / 12.0) - 1.0
     sig_m = sig / np.sqrt(12.0)
 
-    # parametri lognormali coerenti con media/vol aritmetiche mensili
+    # log-vol coerente con la vol aritmetica; mediana mensile = (1+CAGR)^(1/12)
     sigma_log = np.sqrt(np.log(1.0 + (sig_m ** 2) / (1.0 + mu_m) ** 2))
-    mu_log = np.log(1.0 + mu_m) - 0.5 * sigma_log ** 2
+    mu_log = np.log(1.0 + mu_m)
 
     corr = np.array([[1.0, rho], [rho, 1.0]])
     L = np.linalg.cholesky(corr + np.eye(2) * 1e-12)
@@ -88,7 +101,7 @@ def genera_gbm_cholesky(mu_e, sig_e, mu_b, sig_b, rho, mesi, n, seed, kappa=0.0)
     out = np.empty((n, mesi, 2))
     X = np.zeros((n, 2))  # log-rendimento cumulato per asset
     for t in range(mesi):
-        z = rng.standard_normal((n, 2)) @ L.T          # normali correlate
+        z = _shock_t_student(rng, (n, 2), nu, condividi_righe=True) @ L.T
         shock = z * sigma_log                            # scala log-vol
         drift = mu_log + k_m * (mu_log * t - X)          # mean reversion
         r_log = drift + shock
@@ -274,11 +287,14 @@ def simula_pac_avanzato(paths, p):
 # UI
 # ---------------------------------------------------------------------------
 def render_pac_avanzato(ctx):
-    st.subheader("🧪 PAC avanzato — 2 asset, derisking, ribilanciamento, decumulo")
+    st.subheader("🧪 PAC — 2 asset, derisking, ribilanciamento, decumulo")
     st.caption(
-        "Modello a due asset (Azionario/Obbligazionario) con covarianza alla "
-        "Markowitz, motore Monte Carlo selezionabile (bootstrap storico o "
-        "GBM-Cholesky con mean reversion), glidepath di derisking, "
+        "Sezione PAC unificata: parametri dal **portafoglio ticker** (dati "
+        "storici Yahoo, con correzione del drift) oppure **manuali** — la "
+        "vecchia modalità 'semplice' vive qui. Modello a due asset "
+        "(Azionario/Obbligazionario) con covarianza alla Markowitz, motore "
+        "Monte Carlo selezionabile (bootstrap storico o GBM-Cholesky con "
+        "mean reversion e code grasse), glidepath di derisking, "
         "ribilanciamento periodico sul valore delle quote (con tasse sul "
         "realizzato), bollo 0,2%, costi ETF opzionali e fase di decumulo. "
         "Curve anche deflazionate (euro reali). Non e' consulenza finanziaria."
@@ -289,83 +305,110 @@ def render_pac_avanzato(ctx):
     cap_iniziale = float(ctx.get("cap_iniziale_pac", 0.0))
     seed = int(st.session_state.get("master_seed", 33))
 
-    # --- Precondizione: serve il portafoglio ticker gia' scaricato da Yahoo --
-    # Nessun fallback parametrico "inventato": se manca, il tab si ferma qui.
-    # Distinguo due casi ben diversi, così non nascondo il vero problema:
-    #   a) il portafoglio ticker non e' stato configurato -> spiego come farlo
-    #   b) e' configurato ma il download da Yahoo e' fallito (rete, rate
-    #      limit, ticker non valido, storico comune troppo corto...) -> mostro
-    #      l'errore VERO invece del generico "configuralo"
+    # --- FONTE DEI PARAMETRI: portafoglio ticker (dati storici) o manuale ----
+    # Questo tab assorbe anche il vecchio "PAC semplice": se il portafoglio
+    # ticker non e' disponibile (o se l'utente preferisce), si lavora in
+    # modalita' PARAMETRICA a 2 asset con CAGR/vol/rho scelti a mano.
     errore_download = ctx.get("portafoglio_errore")
     usa_portafoglio_ctx = ctx.get("usa_portafoglio", False)
     stima = classifica_e_stima(ctx)
-    if stima is None:
+
+    if stima is not None:
+        fonte = st.radio(
+            "Fonte dei parametri (rendimento, volatilità, correlazione)",
+            ["Portafoglio ticker (dati storici Yahoo)", "Parametri manuali (2 asset)"],
+            index=0, horizontal=True, key="pav_fonte",
+            help="Con i ticker, tutto è stimato dai prezzi reali (con "
+                 "correzione del drift). In manuale scegli tu CAGR, "
+                 "volatilità e correlazione dei due asset.",
+        )
+        fonte_ticker = fonte.startswith("Portafoglio")
+    else:
+        fonte_ticker = False
         if usa_portafoglio_ctx and errore_download:
             st.error(
-                f"⚠️ Il portafoglio ticker è configurato ma il download dei "
-                f"prezzi da Yahoo Finance è fallito: **{errore_download}**\n\n"
-                f"Cause tipiche: nessuna connessione in uscita consentita "
-                f"dall'ambiente di deploy, limite di richieste di Yahoo "
-                f"raggiunto (riprova tra qualche minuto), un ticker scritto "
-                f"male, o storico comune tra i ticker scelti troppo corto "
-                f"(serve almeno un paio d'anni di mesi in comune). Controlla "
-                f"anche la sezione **'📈 Portafoglio PAC a Ticker'** più in "
-                f"alto nella pagina principale, che mostra lo stesso errore."
+                f"⚠️ Portafoglio ticker configurato ma download da Yahoo "
+                f"fallito: **{errore_download}** — procedo in modalità "
+                f"parametrica manuale. (Cause tipiche: rete assente, rate "
+                f"limit Yahoo, ticker errato, storico comune troppo corto.)"
             )
         elif usa_portafoglio_ctx:
             st.warning(
-                "⚠️ Il portafoglio ticker risulta configurato ma non ancora "
-                "elaborato: aspetta il ricalcolo della pagina principale (a "
-                "volte serve un secondo giro dopo aver cambiato i ticker), "
-                "poi torna su questo tab."
+                "⚠️ Portafoglio ticker configurato ma non ancora elaborato: "
+                "aspetta il ricalcolo della pagina principale, poi torna qui. "
+                "Nel frattempo puoi usare la modalità parametrica manuale."
             )
         else:
-            st.warning(
-                "⚠️ Questo modulo calcola TUTTI i parametri (rendimento, "
-                "volatilità, correlazione) dai prezzi reali di Yahoo Finance — "
-                "non propone assunzioni manuali. Configura prima il portafoglio "
-                "in sidebar: **5. PAC (ETF)** → modalità **'Portafoglio ticker "
-                "(dati storici)'**, seleziona almeno un ETF azionario e uno "
-                "obbligazionario (es. dal catalogo, categoria 'Obbligazionario'), "
-                "poi torna su questo tab."
+            st.info(
+                "ℹ️ Nessun portafoglio ticker in sidebar (**5. PAC (ETF)** → "
+                "'Portafoglio ticker'): modalità **parametrica manuale** a "
+                "2 asset. Coi ticker, parametri e correlazioni verrebbero "
+                "stimati dai prezzi reali."
             )
-        return
 
-    serie_e, serie_b = stima["serie_e"], stima["serie_b"]
-    mu_e, sig_e, mu_b, sig_b, rho = (stima["mu_e"], stima["sig_e"],
-                                     stima["mu_b"], stima["sig_b"], stima["rho"])
+    if fonte_ticker:
+        serie_e, serie_b = stima["serie_e"], stima["serie_b"]
+        mu_e, sig_e, mu_b, sig_b, rho = (stima["mu_e"], stima["sig_e"],
+                                         stima["mu_b"], stima["sig_b"], stima["rho"])
 
-    st.caption(
-        f"📊 Parametri stimati da **{stima['n_mesi']} mesi** di storico Yahoo — "
-        f"azionario: {', '.join(stima['tickers_azionari'])} · "
-        f"obbligazionario: {', '.join(stima['tickers_obblig'])}"
-    )
-    e1, e2, e3, e4, e5 = st.columns(5)
-    e1.metric("μ Azionario", f"{mu_e*100:+.2f}%")
-    e2.metric("σ Azionario", f"{sig_e*100:.2f}%")
-    e3.metric("μ Obbligaz.", f"{mu_b*100:+.2f}%")
-    e4.metric("σ Obbligaz.", f"{sig_b*100:.2f}%")
-    e5.metric("ρ (correlazione)", f"{rho:+.2f}")
+        st.caption(
+            f"📊 Parametri stimati da **{stima['n_mesi']} mesi** di storico Yahoo — "
+            f"azionario: {', '.join(stima['tickers_azionari'])} · "
+            f"obbligazionario: {', '.join(stima['tickers_obblig'])}"
+        )
+        e1, e2, e3, e4, e5 = st.columns(5)
+        e1.metric("CAGR Azionario", f"{mu_e*100:+.2f}%",
+                  help="Rendimento composto annuo del campione (geometrico), "
+                       "non media aritmetica: è il tasso a cui lo storico ha "
+                       "composto davvero.")
+        e2.metric("σ Azionario", f"{sig_e*100:.2f}%")
+        e3.metric("CAGR Obbligaz.", f"{mu_b*100:+.2f}%")
+        e4.metric("σ Obbligaz.", f"{sig_b*100:.2f}%")
+        e5.metric("ρ (correlazione)", f"{rho:+.2f}")
+    else:
+        serie_e = serie_b = None
+        st.markdown("**Parametri manuali (CAGR = rendimento composto annuo; "
+                    "la traiettoria mediana compone a quel tasso)**")
+        m1, m2, m3, m4, m5 = st.columns(5)
+        mu_e = m1.number_input("CAGR Azionario (%)", 0.0, 12.0, 6.5, 0.1,
+                               key="pav_man_mue",
+                               help="Riferimento: azionario globale ~6,5% "
+                                    "nominale secolare (o una CMA aggiornata).") / 100
+        sig_e = m2.number_input("σ Azionario (%)", 5.0, 30.0, 15.0, 0.5,
+                                key="pav_man_sige") / 100
+        mu_b = m3.number_input("CAGR Obbligaz. (%)", 0.0, 8.0, 2.5, 0.1,
+                               key="pav_man_mub") / 100
+        sig_b = m4.number_input("σ Obbligaz. (%)", 1.0, 15.0, 5.0, 0.5,
+                                key="pav_man_sigb") / 100
+        rho = m5.number_input("ρ azionario-obblig.", -0.9, 0.9, 0.10, 0.05,
+                              key="pav_man_rho",
+                              help="Storicamente oscilla tra circa -0,3 e +0,4.")
 
     c1, c2, c3 = st.columns(3)
 
     # --- Motore Monte Carlo -------------------------------------------------
     with c1:
         st.markdown("**Motore Monte Carlo**")
-        motore = st.radio(
-            "Generatore dei rendimenti", 
-            ["GBM multivariato (Cholesky)", "Block-bootstrap storico"],
-            key="pav_motore",
-            help="**GBM-Cholesky**: genera rendimenti CASUALI da mu/sigma/rho "
-                 "stimati sopra (assume che i rendimenti seguano una "
-                 "distribuzione log-normale). **Block-bootstrap**: invece di "
-                 "generare numeri, RIPESCA a blocchi mesi realmente accaduti "
-                 "dallo storico Yahoo — non assume nessuna distribuzione "
-                 "teorica, ma è limitato ai pattern già visti in passato "
-                 "(es. non genera mai un crollo peggiore del peggiore "
-                 "storico).",
-        )
-        usa_bootstrap = motore.startswith("Block")
+        if fonte_ticker:
+            motore = st.radio(
+                "Generatore dei rendimenti",
+                ["GBM multivariato (Cholesky)", "Block-bootstrap storico"],
+                key="pav_motore",
+                help="**GBM-Cholesky**: genera rendimenti CASUALI da mu/sigma/rho "
+                     "stimati sopra (assume che i rendimenti seguano una "
+                     "distribuzione log-normale). **Block-bootstrap**: invece di "
+                     "generare numeri, RIPESCA a blocchi mesi realmente accaduti "
+                     "dallo storico Yahoo — non assume nessuna distribuzione "
+                     "teorica, ma è limitato ai pattern già visti in passato "
+                     "(es. non genera mai un crollo peggiore del peggiore "
+                     "storico).",
+            )
+            usa_bootstrap = motore.startswith("Block")
+        else:
+            st.caption("Motore: **GBM multivariato (Cholesky)**. Il "
+                       "block-bootstrap richiede serie storiche reali: "
+                       "disponibile solo con la fonte 'Portafoglio ticker'.")
+            usa_bootstrap = False
         n_scen = st.slider(
             "Numero scenari", 200, 2000, 500, 100, key="pav_n",
             help="Quante traiettorie Monte Carlo simulare. Più scenari = "
@@ -389,45 +432,75 @@ def render_pac_avanzato(ctx):
                      "riduce la probabilita' di scenari estremi persistenti.",
             )
 
-    # --- Correttivo opzionale (solo sul rendimento atteso, spento di default) -
+    # --- Drift: shrinkage verso l'ancora / manuale / solo storico ------------
     with c2:
-        st.markdown("**Correttivo (opzionale)**")
-        if usa_bootstrap:
+        st.markdown("**Drift (correzione realismo)**")
+        if fonte_ticker:
             st.caption(
-                "Non disponibile col motore Block-bootstrap: lì i rendimenti "
-                "sono ripescati direttamente dallo storico, non c'è un "
-                "parametro mu da correggere. Passa a 'GBM multivariato' per "
-                "usarlo."
+                "Lo storico disponibile e' spesso corto e coglie un solo regime "
+                "di mercato: estrapolarne la media per decenni sovrastima. Lo "
+                "**shrinkage** pesa lo storico per `w = mesi/240` e un'**ancora "
+                "di lungo periodo** per il resto (media secolare o una CMA "
+                "aggiornata: JPMorgan LTCMA, Vanguard...). Vale per ENTRAMBI i "
+                "motori: nel bootstrap le serie vengono ricentrate sul CAGR "
+                "corretto, preservando volatilita', sequenze e correlazione. "
+                "Volatilita' e rho restano SEMPRE quelli stimati dai dati."
             )
-            override_on = False
-        else:
-            st.caption(
-                "Spento di default: uso i valori stimati sopra. La media "
-                "storica e' un cattivo stimatore del rendimento futuro — se "
-                "vuoi puoi correggerla a mano, ma volatilità e correlazione "
-                "restano SEMPRE quelle stimate dai dati (stesso principio "
-                "del PAC a ticker)."
+            modo_drift = st.radio(
+                "Correzione del drift",
+                ["Shrinkage verso l'ancora", "Manuale", "Solo storico"],
+                index=0, key="pav_drift",
             )
-            override_on = st.checkbox(
-                "Correggi a mano il rendimento atteso", value=False, key="pav_override",
-                help="Attivalo solo se hai una view specifica sul futuro (es. "
-                     "'mi aspetto meno crescita azionaria dei prossimi anni "
-                     "rispetto agli ultimi X anni di storico'). Cambia SOLO il "
-                     "centro (mu) della distribuzione simulata: la forma della "
-                     "dispersione (sigma, rho) resta quella osservata nei dati.",
-            )
-            if override_on:
+            w_camp = min(1.0, stima["n_mesi"] / float(MESI_PIENA_FIDUCIA))
+            if modo_drift.startswith("Shrinkage"):
+                anc_e = st.number_input("Ancora azionario (CAGR %)", 0.0, 12.0, 6.5,
+                                        0.1, key="pav_anc_e") / 100
+                anc_b = st.number_input("Ancora obbligazionario (CAGR %)", 0.0, 8.0,
+                                        2.5, 0.1, key="pav_anc_b") / 100
+                mu_e_corr, _ = shrink_verso_ancora(mu_e, stima["n_mesi"], anc_e)
+                mu_b_corr, _ = shrink_verso_ancora(mu_b, stima["n_mesi"], anc_b)
+                st.caption(
+                    f"Peso storico **{w_camp*100:.0f}%** ({stima['n_mesi']} mesi). "
+                    f"Azionario {mu_e*100:.2f}% → **{mu_e_corr*100:.2f}%** · "
+                    f"Obbligaz. {mu_b*100:.2f}% → **{mu_b_corr*100:.2f}%**"
+                )
+                mu_e, mu_b = mu_e_corr, mu_b_corr
+            elif modo_drift.startswith("Manuale"):
                 mu_e = st.slider(
-                    "Rend. atteso Azionario corretto (%)", 0.0, 12.0,
+                    "CAGR Azionario corretto (%)", 0.0, 12.0,
                     round(mu_e * 100, 1), 0.1, key="pav_mue_ov",
-                    help="Sostituisce il mu azionario stimato sopra in TUTTI "
-                         "gli scenari generati da qui in poi.",
+                    help="Rendimento composto annuo della traiettoria mediana.",
                 ) / 100
                 mu_b = st.slider(
-                    "Rend. atteso Obbligaz. corretto (%)", 0.0, 8.0,
+                    "CAGR Obbligaz. corretto (%)", 0.0, 8.0,
                     round(mu_b * 100, 1), 0.1, key="pav_mub_ov",
                     help="Come sopra, ma per il bucket obbligazionario.",
                 ) / 100
+            else:
+                st.caption(
+                    f"⚠️ CAGR del campione ({stima['n_mesi']} mesi) estrapolato "
+                    f"per {durata}+ anni: rischio di forte sovrastima se lo "
+                    f"storico copre un regime favorevole."
+                )
+        else:
+            modo_drift = "Manuale"
+            st.caption(
+                "Fonte parametrica manuale: i CAGR che hai inserito sopra "
+                "SONO il drift (nessuna correzione da applicare). Usa valori "
+                "composti realistici: la media storica di un periodo "
+                "favorevole non è un buon input."
+            )
+        if not usa_bootstrap:
+            code_grasse = st.checkbox(
+                "Code grasse (T di Student, ν=5)", value=True, key="pav_tstud",
+                help="Shock a code grasse al posto della gaussiana: P10 più "
+                     "severo e realistico. Il fattore di coda è condiviso dai "
+                     "due asset nello stesso mese (crash congiunti). Il "
+                     "bootstrap non ne ha bisogno: ripesca le code reali.",
+            )
+            nu_t = 5.0 if code_grasse else 0.0
+        else:
+            nu_t = 0.0
 
     # --- Allocazione, derisking, ribilanciamento -----------------------------
     with c3:
@@ -626,11 +699,19 @@ def render_pac_avanzato(ctx):
 
     try:
         if usa_bootstrap:
-            paths = genera_bootstrap_congiunto(serie_e, serie_b, mesi_tot,
+            # Il drift corretto (shrinkage/manuale) si applica RICENTRANDO le
+            # serie storiche sul CAGR target: vol, sequenze e correlazione
+            # restano quelle reali, cambia solo il tasso di composizione.
+            se_boot, sb_boot = serie_e, serie_b
+            if not modo_drift.startswith("Solo"):
+                se_boot = ricentra_mensili(serie_e, mu_e)
+                sb_boot = ricentra_mensili(serie_b, mu_b)
+            paths = genera_bootstrap_congiunto(se_boot, sb_boot, mesi_tot,
                                                n_scen, int(block), seed + 500)
         else:
             paths = genera_gbm_cholesky(mu_e, sig_e, mu_b, sig_b, rho,
-                                        mesi_tot, n_scen, seed + 500, kappa=kappa)
+                                        mesi_tot, n_scen, seed + 500,
+                                        kappa=kappa, nu=nu_t)
     except ValueError as e:
         st.error(f"Impossibile generare gli scenari: {e}")
         return
@@ -766,8 +847,11 @@ def classifica_e_stima(ctx):
     m = min(len(serie_e), len(serie_b))
     serie_e, serie_b = serie_e[-m:], serie_b[-m:]
 
-    mu_e = float((1.0 + serie_e.mean()) ** 12 - 1.0)
-    mu_b = float((1.0 + serie_b.mean()) ** 12 - 1.0)
+    # CAGR (geometrico): il tasso a cui il campione ha COMPOSTO davvero.
+    # La media aritmetica annualizzata sarebbe piu' alta di ~sigma^2/2
+    # (volatility drag) e sovrastimerebbe sistematicamente il montante.
+    mu_e = float(cagr_da_mensili(serie_e))
+    mu_b = float(cagr_da_mensili(serie_b))
     sig_e = float(serie_e.std(ddof=1) * np.sqrt(12.0))
     sig_b = float(serie_b.std(ddof=1) * np.sqrt(12.0))
     rho = float(np.corrcoef(serie_e, serie_b)[0, 1])
